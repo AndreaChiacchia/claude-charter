@@ -11,7 +11,7 @@ import {
   headValue,
   GLIDE_FRAMES,
 } from './anim'
-import type { Anim, Effects, Scene, Settings } from './anim'
+import type { Anim, Effects, Placement, Scene, Settings } from './anim'
 import {
   DEFAULT,
   DEFAULT_TRACK_ENDS,
@@ -48,6 +48,24 @@ export { posOf }
 
 /** The `PromptHint` slot is indented by this many columns: the row is that much narrower than the window. */
 export const HINT_INDENT = 2
+/** The address of the open glyph's Button: `ui.press` reaches it by this key. */
+export const OPEN_KEY = 'charter-open'
+/** The label of the open glyph: a midline horizontal ellipsis. */
+export const OPEN_GLYPH = '⋯'
+/** The open glyph's hotkey, given only with placement `above` (the band is a focus site). */
+export const OPEN_HOTKEY = 'c'
+/** The key of the width probe under the prompt: ui.message names it. */
+export const PROBE_KEY = 'charter-probe'
+
+/**
+ * The cells the open glyph takes at the end of the row: a one-cell gap and the glyph, or with the band's hotkey "c: ⋯".
+ */
+export function openCells(placement: Placement): number {
+  if (placement === 'under') return 2
+  if (placement === 'above') return 5
+
+  return 0
+}
 /** The window width assumed when the surface did not measure one. */
 export const DEFAULT_COLUMNS = 80
 

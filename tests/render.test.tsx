@@ -300,7 +300,9 @@ test('the tool charts a route, the band draws it, one participant file holds it'
   const r = await call($, PLAN)
   expect(r.text.startsWith('Route "M1.6"')).toBe(true)
   const drawn = await ui.drawn()
-  expect(raster(drawn)?.props?.columns).toBe(120)
+  // The stub lays the probe out at the viewport's size at mount (documented for MountTarget.viewport), so the row takes
+  // the 122 columns it measures; the viewport fallback (120 less the glyph's 2) only applies before a measurement.
+  expect(raster(drawn)?.props?.columns).toBe(122)
   expect(raster(drawn)?.props?.rows).toBe(1)
   expect(rowText(drawn)).toContain('M1.6')
   const jsons = [...w.files.keys()].filter(k => k.endsWith('.json'))
@@ -481,6 +483,10 @@ test('the nudge setting off', { options: { nudge: 'off' } }, async ($, on) => {
   expect(await agentCall($)).toBeUndefined()
 })
 
+/** The element children of a node (a conditional child that drew nothing is left out). */
+const kids = (node: unknown): Node[] =>
+  ((node as Node | undefined)?.children ?? []).filter((c): c is Node => c !== null && typeof c === 'object')
+
 /** Every margin or padding prop anywhere in a tree. */
 const spacing = (node: unknown): string[] =>
   walk(node).flatMap(n => Object.keys(n.props ?? {}).filter(k => /^(margin|padding|gap)/.test(k)))
@@ -495,9 +501,27 @@ test('the route is the first row after the hint, with the other mods rows after 
   // Flattened, not nested: hint, route, the blank line (setting gapBelow, on by default), then the rows the hooks beneath stacked.
   expect(children.length).toBe(6)
   expect(text(children[0])).toBe('? for shortcuts')
-  expect(children[1]?.type).toBe('Raster')
-  expect(children[1]?.props?.columns).toBe(120)
-  expect(children[1]?.props?.rows).toBe(1)
+  // The route is one row Box: the width probe (absolute, no room in the flow), the Raster, the spacer, a one-cell gap and
+  // the open glyph (a plain, dim Button, no hotkey under the prompt).
+  expect(children[1]?.type).toBe('Box')
+  expect(children[1]?.props?.flexDirection).toBe('row')
+  const rowParts = kids(children[1])
+  expect(rowParts.length).toBe(5)
+  expect(rowParts[0]?.type).toBe('Box')
+  expect(rowParts[0]?.props?.position).toBe('absolute')
+  expect(rowParts[1]?.type).toBe('Raster')
+  // The probe starts laid out at the viewport's 122 columns in the stub, and the row takes what it measured.
+  expect(rowParts[1]?.props?.columns).toBe(122)
+  expect(rowParts[1]?.props?.rows).toBe(1)
+  expect(rowParts[2]?.type).toBe('Box')
+  expect(rowParts[2]?.props?.flexGrow).toBe(1)
+  expect(text(rowParts[3])).toBe(' ')
+  expect(rowParts[4]?.type).toBe('Button')
+  expect(rowParts[4]?.props?.key).toBe('charter-open')
+  expect(rowParts[4]?.props?.label).toBe('⋯')
+  expect(rowParts[4]?.props?.plain).toBe(true)
+  expect(rowParts[4]?.props?.dimColor).toBe(true)
+  expect(rowParts[4]?.props?.hotkey).toBeUndefined()
   expect(children[2]?.type).toBe('Text')
   expect(text(children[2])).toBe(' ')
   expect(children.slice(3).map(text)).toEqual(['PEEKER-LINE', 'SPOTTER-ROW', 'TICKER-ROW'])
@@ -512,7 +536,8 @@ test('gapBelow off: the other mods rows sit right under the route, no blank line
   const children = (drawn.children ?? []) as Node[]
   expect(children.length).toBe(5)
   expect(text(children[0])).toBe('? for shortcuts')
-  expect(children[1]?.type).toBe('Raster')
+  expect(children[1]?.type).toBe('Box')
+  expect(raster(children[1])).toBeDefined()
   expect(children.slice(2).map(text)).toEqual(['PEEKER-LINE', 'SPOTTER-ROW', 'TICKER-ROW'])
   expect(spacing(drawn)).toEqual([])
 })
@@ -524,7 +549,8 @@ test('under the prompt with no rows stacked under the hint there is no trailing 
   const children = (drawn.children ?? []) as Node[]
   expect(children.length).toBe(2)
   expect(text(children[0])).toBe('? for shortcuts')
-  expect(children[1]?.type).toBe('Raster')
+  expect(children[1]?.type).toBe('Box')
+  expect(raster(children[1])).toBeDefined()
 })
 
 test('with no route, or under 20 columns, the hint slot has no blank line either', async ($, on) => {
@@ -541,11 +567,14 @@ test('with no route, or under 20 columns, the hint slot has no blank line either
   expect((drawn.children ?? []).length).toBe(2)
 })
 
-test('the row is two columns narrower than the window, and under 20 columns nothing is drawn', async ($, on) => {
+test('the row takes the slot the probe measures, and under 20 columns nothing is drawn', async ($, on) => {
   world(on)
   await charted($)
-  const narrow = await mount($, { ...HINT, requestId: 'hint-62', viewport: { columns: 62, rows: 40 } as never })
-  expect(raster(await narrow.drawn())?.props?.columns).toBe(60)
+  const narrow = (await mount($, { ...HINT, requestId: 'hint-62', viewport: { columns: 62, rows: 40 } as never })) as unknown as Probed
+  // The stub starts the probe laid out at the viewport's 62 columns; a resize gives the row the slot's cells exactly.
+  expect(raster(await narrow.drawn())?.props?.columns).toBe(62)
+  await narrow.resize({ columns: 58, rows: 1, in: 'charter-probe' })
+  expect(raster(await narrow.drawn())?.props?.columns).toBe(58)
   const tiny = await mount($, { ...HINT, requestId: 'hint-21', viewport: { columns: 21, rows: 40 } as never })
   const drawn = (await tiny.drawn()) as Node
   expect(raster(drawn)).toBeUndefined()
@@ -568,6 +597,138 @@ test('the desktop draws the row still, as colored text', async ($, on) => {
   expect(raster(drawn)).toBeUndefined()
   expect(text(drawn)).toContain('M1.6 ›')
   expect(text((drawn.children ?? [])[0])).toBe('? for shortcuts')
+})
+
+const buttons = (node: unknown): Node[] => walk(node).filter(n => n.type === 'Button')
+
+test('the desktop draws the open glyph beside the still row', async ($, on) => {
+  world(on)
+  await charted($)
+  const ui = await mount($, { ...HINT, surface: 'desktop', requestId: 'hint-desktop-open' })
+  const drawn = (await ui.drawn()) as Node
+  expect(raster(drawn)).toBeUndefined()
+  expect(buttons(drawn).map(b => b.props?.key)).toEqual(['charter-open'])
+  expect(text(drawn)).toContain('⋯')
+})
+
+test('the open glyph opens the route chart', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const ui = await mount($)
+  await ui.drawn()
+  expect(w.opens).toEqual([])
+  await ui.press({ key: 'charter-open' })
+  expect(w.opens).toEqual(['charter'])
+})
+
+test('placement above: the open glyph has the hotkey c', { options: { placement: 'above' } }, async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const ui = await mount($, ABOVE)
+  const found = buttons(await ui.drawn()).filter(b => b.props?.key === 'charter-open')
+  expect(found.length).toBe(1)
+  expect(found[0]?.props?.hotkey).toBe('c')
+  await ui.press({ key: 'charter-open' })
+  expect(w.opens).toContain('charter')
+})
+
+test('no open glyph without a route or with placement panel', async ($, on) => {
+  world(on)
+  await begin($)
+  expect(buttons(await (await mount($)).drawn())).toEqual([])
+})
+
+test('no open glyph with placement panel', { options: { placement: 'panel' } }, async ($, on) => {
+  world(on)
+  await begin($)
+  const hint = await mount($)
+  const above = await mount($, ABOVE)
+  await call($, PLAN)
+  expect(buttons(await hint.drawn())).toEqual([])
+  expect(buttons(await above.drawn())).toEqual([])
+})
+
+const clients = (node: unknown): Node[] => walk(node).filter(n => n.type === 'Client')
+
+/** A mounted drawing as the probe tests use it: the acts on a Client, typed for the terminal. */
+type Probed = {
+  drawn: () => Promise<unknown>
+  resize: (size: { columns: number; rows: number; in?: string }) => Promise<void>
+  post: (data: unknown, scope?: { in?: string }) => Promise<void>
+}
+const mountProbed = async ($: Engine, target: object = HINT): Promise<Probed> => (await mount($, target)) as unknown as Probed
+
+test('the row fills the slot the probe measures, and the glyph takes its last column', async ($, on) => {
+  world(on)
+  await charted($)
+  const ui = await mountProbed($)
+  const first = await ui.drawn()
+  const probes = clients(first)
+  expect(probes.length).toBe(1)
+  expect(probes[0]?.props?.key).toBe('charter-probe')
+  // The engine reports the module's path under the plugin's folder.
+  expect(probes[0]?.props?.module).toBe('hooks/probe.ts')
+  // The probe sits in an absolute Box from the row's left edge to the cells the glyph takes.
+  const holder = walk(first).find(n => n.type === 'Box' && n.props?.position === 'absolute')
+  expect(holder?.props?.left).toBe(0)
+  expect(holder?.props?.right).toBe(2)
+  await ui.resize({ columns: 160, rows: 1, in: 'charter-probe' })
+  const wide = await ui.drawn()
+  expect(raster(wide)?.props?.columns).toBe(160)
+  const row = walk(wide).find(n => n.type === 'Box' && n.props?.flexDirection === 'row')
+  const parts = kids(row)
+  expect(parts.map(n => n.type)).toEqual(['Box', 'Raster', 'Box', 'Text', 'Button'])
+  expect(parts[0]?.props?.position).toBe('absolute')
+  expect(parts[2]?.props?.flexGrow).toBe(1)
+  expect(text(parts[3])).toBe(' ')
+  expect(parts[4]?.props?.key).toBe('charter-open')
+  await ui.resize({ columns: 90, rows: 1, in: 'charter-probe' })
+  expect(raster(await ui.drawn())?.props?.columns).toBe(90)
+  expect(spacing(await ui.drawn())).toEqual([])
+})
+
+test('a probe message sets the row width; a malformed one is ignored', async ($, on) => {
+  world(on)
+  await charted($)
+  const ui = await mountProbed($)
+  await ui.drawn()
+  await ui.post({ columns: 150 })
+  expect(raster(await ui.drawn())?.props?.columns).toBe(150)
+  await ui.post({ columns: 'x' })
+  await ui.post({ columns: 9999 })
+  await ui.post({ columns: 0 })
+  await ui.post({ columns: 12.5 })
+  await ui.post(null)
+  expect(raster(await ui.drawn())?.props?.columns).toBe(150)
+})
+
+test('a measured slot under 20 cells draws no row', async ($, on) => {
+  world(on)
+  await charted($)
+  const ui = await mountProbed($)
+  await ui.drawn()
+  // 17 cells and the glyph's 2 make 19, under the 20 the band needs.
+  await ui.post({ columns: 17 })
+  const drawn = await ui.drawn()
+  expect(raster(drawn)).toBeUndefined()
+  expect(text(drawn)).toBe('? for shortcuts')
+})
+
+test('the probe is only under the prompt on the terminal', { options: { placement: 'above' } }, async ($, on) => {
+  world(on)
+  await charted($)
+  const above = (await (await mount($, ABOVE)).drawn()) as Node
+  expect(clients(above)).toEqual([])
+  expect(walk(above).some(n => n.type === 'Box' && n.props?.flexGrow === 1)).toBe(true)
+})
+
+test('the desktop draws a spacer and no probe', async ($, on) => {
+  world(on)
+  await charted($)
+  const ui = await mount($, { ...HINT, surface: 'desktop', requestId: 'hint-desktop-probe' })
+  const drawn = (await ui.drawn()) as Node
+  expect(clients(drawn)).toEqual([])
+  expect(walk(drawn).some(n => n.type === 'Box' && n.props?.flexGrow === 1)).toBe(true)
 })
 
 test('the pane lists the route, and clears it', async ($, on) => {
@@ -1013,9 +1174,17 @@ test('placement above draws the row in the band, and the hint slot is left alone
   expect(drawn.props?.flexDirection).toBe('column')
   const parts = (drawn.children ?? []) as Node[]
   expect(parts.length).toBe(2)
-  expect(parts[0]?.type).toBe('Raster')
-  expect(parts[0]?.props?.columns).toBe(120)
-  expect(parts[0]?.props?.rows).toBe(1)
+  expect(parts[0]?.type).toBe('Box')
+  expect(parts[0]?.props?.flexDirection).toBe('row')
+  expect(raster(parts[0])?.props?.columns).toBe(115)
+  expect(raster(parts[0])?.props?.rows).toBe(1)
+  const bandButton = walk(parts[0]).find(n => n.type === 'Button')
+  expect(bandButton?.props?.key).toBe('charter-open')
+  expect(bandButton?.props?.hotkey).toBe('c')
+  // Above the prompt the width is the band's own: no probe, only the spacer that keeps the glyph on the right edge.
+  expect(clients(parts[0])).toEqual([])
+  expect(kids(parts[0]).map(n => n.type)).toEqual(['Raster', 'Box', 'Text', 'Button'])
+  expect(kids(parts[0])[1]?.props?.flexGrow).toBe(1)
   expect(parts[1]?.type).toBe('Text')
   expect(text(parts[1])).toBe(' ')
   expect(rowCells(drawn)[0]?.cp).toBe(0x25d6)
@@ -1049,7 +1218,7 @@ test('placement above keeps what another mod drew in the band', { options: { pla
   const children = (drawn.children ?? []) as Node[]
   // The row, the blank line under it (setting gapBelow, on by default), then what the other mod drew.
   expect(children.length).toBe(3)
-  expect(children[0]?.type).toBe('Raster')
+  expect(children[0]?.type).toBe('Box')
   expect(text(children[1])).toBe(' ')
   expect(text(children[2])).toBe('OTHER')
 })
@@ -1058,8 +1227,9 @@ test('placement above with gapBelow off: no blank line under the row', { options
   world(on)
   await charted($)
   const alone = (await (await mount($, ABOVE)).drawn()) as Node
-  expect(alone.type).toBe('Raster')
-  expect(alone.props?.columns).toBe(120)
+  expect(alone.type).toBe('Box')
+  expect(alone.props?.flexDirection).toBe('row')
+  expect(raster(alone)?.props?.columns).toBe(115)
 })
 
 test('placement above with gapBelow off keeps what another mod drew right under the row', { options: { placement: 'above', gapBelow: 'off' } }, async ($, on) => {
@@ -1068,7 +1238,7 @@ test('placement above with gapBelow off keeps what another mod drew right under 
   const drawn = (await (await mount($, ABOVE)).drawn()) as Node
   const children = (drawn.children ?? []) as Node[]
   expect(children.length).toBe(2)
-  expect(children[0]?.type).toBe('Raster')
+  expect(children[0]?.type).toBe('Box')
   expect(text(children[1])).toBe('OTHER')
 })
 

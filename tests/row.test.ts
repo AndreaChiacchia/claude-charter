@@ -26,7 +26,20 @@ import {
 } from '../hooks/cells'
 import type { Cell } from '../hooks/cells'
 import { progress } from '../hooks/route'
-import { DEFAULT_COLUMNS, HINT_INDENT, composeRow, composeTrack, normalizeSettings, ownIndex, posOf } from '../hooks/row'
+import {
+  DEFAULT_COLUMNS,
+  HINT_INDENT,
+  OPEN_GLYPH,
+  OPEN_HOTKEY,
+  OPEN_KEY,
+  PROBE_KEY,
+  composeRow,
+  composeTrack,
+  normalizeSettings,
+  openCells,
+  ownIndex,
+  posOf,
+} from '../hooks/row'
 import { fixtureChart, item } from './fixture'
 
 const S = normalizeSettings({})
@@ -548,6 +561,16 @@ test('the animated frame adds the effects over the still one', async () => {
   expect(wake[at - 2]?.fg).toBe(mixColor(FILL, HEAD, 0.3))
 })
 
+test('the open glyph reserves its cells', () => {
+  expect(openCells('under')).toBe(2)
+  expect(openCells('above')).toBe(5)
+  expect(openCells('panel')).toBe(0)
+  expect(OPEN_GLYPH).toBe('⋯')
+  expect(OPEN_KEY).toBe('charter-open')
+  expect(OPEN_HOTKEY).toBe('c')
+  expect(PROBE_KEY).toBe('charter-probe')
+})
+
 test('rolling digits flash, the step shimmers and the dot breathes', async () => {
   const busy = scene({ agents: [agent('a1', 'dig')], isWorking: true })
   const a = primed(busy)
@@ -571,18 +594,28 @@ test('rolling digits flash, the step shimmers and the dot breathes', async () =>
   b.tick = 4
   expect(composeRow(idle, b, S, 120, false)[text(composeRow(idle, b, S, 120, false)).indexOf('Catalogue UI')]?.fg).toBe(0x01000000)
 
-  // The phase dot breathes while Claude works.
+  // The phase dot breathes while Claude works: always filled, its colour dims toward the track and back.
   const working = scene({ isWorking: true })
   const w = primed(working)
-  const dotAt = (tick: number): number | undefined => {
-    w.tick = tick
-    const row = composeRow(working, w, S, 120, false)
+  w.tick = 0
+  const dotIndex = text(composeRow(working, w, S, 120, false)).indexOf('●')
+  expect(dotIndex).toBeGreaterThan(0)
+  const dotAt = (tick: number, sc = working, a = w, settings = S, isStill = false): Cell | undefined => {
+    a.tick = tick
 
-    return row[text(row).indexOf('●')]?.fg
+    return composeRow(sc, a, settings, 120, isStill)[dotIndex]
   }
-  expect(dotAt(0)).toBe(LIVE)
-  expect(dotAt(DOT_BREATHE)).toBe(mixColor(LIVE, TRACK, 0.5))
-  expect(dotAt(2 * DOT_BREATHE)).toBe(LIVE)
+  expect(dotAt(0)?.cp).toBe(GLYPH.dot)
+  expect(dotAt(0)?.fg).toBe(LIVE)
+  expect(dotAt(DOT_BREATHE)?.cp).toBe(GLYPH.dot)
+  expect(dotAt(DOT_BREATHE)?.fg).toBe(mixColor(LIVE, TRACK, 0.5))
+  expect(dotAt(2 * DOT_BREATHE)?.cp).toBe(GLYPH.dot)
+  expect(dotAt(2 * DOT_BREATHE)?.fg).toBe(LIVE)
+  // At rest, with activity off, or on a still row, the dot stays at full colour.
+  const rest = scene()
+  expect(dotAt(DOT_BREATHE, rest, primed(rest))?.fg).toBe(LIVE)
+  expect(dotAt(DOT_BREATHE, working, primed(working), normalizeSettings({ activity: 'off' }))?.fg).toBe(LIVE)
+  expect(dotAt(DOT_BREATHE, working, primed(working), S, true)?.fg).toBe(LIVE)
 })
 
 test('spinners turn only with the activity effect', async () => {

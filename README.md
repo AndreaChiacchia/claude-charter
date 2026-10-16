@@ -15,11 +15,11 @@ A mod for the Claude Code CLI for long orchestrated sessions. It draws the plan 
   Σ $3.21 │ ● FIX │ ███████████████████░░░░░░░ │ $0.42 ▲0.31 │ 312K↓ 2.1K↑
 ```
 
-Left to right: the start cap `◖`, the track with a marker per stage (`◆` passed, `◇` to come), this session's head `►`, another session's `►` in its own color (a stage another session holds is tinted in its color), the end cap `◗`, the percent, the breadcrumb of the current step (the route, the stage, the part) with the phase it is in (`● implement`), and the signal beside it: here a subagent at work.
+Left to right: the start cap `◖`, the track with a marker per stage (`◆` passed, `◇` to come), this session's head `►`, another session's `►` in its own color (a stage another session holds is tinted in its color), the end cap `◗`, the percent, the breadcrumb of the current step (the route, the stage, the part) with the phase it is in (`● implement`), and the signal beside it: here a subagent at work, and at the right end the `⋯` that opens `/charter`.
 
 ## Features
 
-- **The route row**, by default under the prompt as the first row after the hint line: one row that never wraps, with no blank line above or below it. The track is a bold teal line on a dim track between two end caps and fills as work finishes; ten styles are available in the `track` setting (`heavy`, `line`, `smooth`, `blocks`, `shade`, `parallelogram`, `squares`, `dots`, `braille`, `ascii`). The end caps are the `trackEnds` setting, the same in every style: by default a capsule `◖ ◗` whose ends are coloured like the bar beside them (the start like the fill, the end like the empty track), or `◉ ◎`, `╺ ╸`, `▐ ▌`, `[ ]`, `｢ ｣`, or `auto` for each style's own (`┣ ┫`, `┠ ┨`, `▐ ▌`, `[ ]`). A finished route turns both caps gold, whatever the choice. The head `►` stands where this session is; every other live session shows as a `►` in its own color (amber, steel blue, pink, green), and a stage another session holds is tinted in that session's color. On a narrow window the row shrinks in this order: the signal loses its detail, the track shrinks to 10 cells, the route and ancestor titles go, the signal goes, only then does the track go, then the titles, and last the row is cut with `…`. Under 20 columns nothing is drawn. When no step is current it names the next one (`next 3/5 Orbit view`); when the route is complete it rests on a gold `✓ Complete · M1.6 · 5/5`.
+- **The route row**, by default under the prompt as the first row after the hint line: one row that never wraps, with no blank line above or below it. The track is a bold teal line on a dim track between two end caps and fills as work finishes; ten styles are available in the `track` setting (`heavy`, `line`, `smooth`, `blocks`, `shade`, `parallelogram`, `squares`, `dots`, `braille`, `ascii`). The end caps are the `trackEnds` setting, the same in every style: by default a capsule `◖ ◗` whose ends are coloured like the bar beside them (the start like the fill, the end like the empty track), or `◉ ◎`, `╺ ╸`, `▐ ▌`, `[ ]`, `｢ ｣`, or `auto` for each style's own (`┣ ┫`, `┠ ┨`, `▐ ▌`, `[ ]`). A finished route turns both caps gold, whatever the choice. The head `►` stands where this session is; every other live session shows as a `►` in its own color (amber, steel blue, pink, green), and a stage another session holds is tinted in that session's color. A dim `⋯` at the right end of the row opens the `/charter` checklist on a click; with placement `above` it reads `c: ⋯`, and `c` opens it once the band holds the focus (a click or ctrl+x tab). On a narrow window the row shrinks in this order: the signal loses its detail, the track shrinks to 10 cells, the route and ancestor titles go, the signal goes, only then does the track go, then the titles, and last the row is cut with `…`. Under 20 columns nothing is drawn. When no step is current it names the next one (`next 3/5 Orbit view`); when the route is complete it rests on a gold `✓ Complete · M1.6 · 5/5`.
 - **Placement** (setting `placement`): `under` the prompt (the default; the first row under the hint, so list claudecharter first), `above` the prompt (the band where surveys draw; it yields to them, and `[-]` or ctrl+x ctrl+a collapses it), or `panel` only (no row anywhere, nothing animates; the pane shows the route, a toast says when a route is charted, and `/charter demo` plays in the pane). With setting `gapBelow` (on by default) one blank line separates the row from what is drawn under it: the other mods' rows under the prompt (no blank line when nothing is drawn after the row), or the prompt box when the row is above it.
 - **Hard signals, seen by the mod itself:**
   - **Subagents** with their description: `◐ coverage matrix`, `+2` when more run.
@@ -127,6 +127,8 @@ Or load it for a single session with `claude --plugin-dir <path to this folder>`
 | `/charter demo pane` | Play it where the route shows and in the pane |
 | `/charter demo stop` | End it |
 
+Clicking the `⋯` at the end of the route row does the same as `/charter`.
+
 ## Settings
 
 Set them in `/config`, or in settings under `pluginConfigs.claudecharter`. A change applies at once.
@@ -153,6 +155,7 @@ A change applies at once: Claude Code reloads the mod with the new settings. All
 - **The route model:** items with ids (at most 24 characters, no spaces), titles, optional phases, nested up to 4 levels and 200 items. A parent with no phases is done when all its children are (roll-up); the route is complete when every top-level item is closed.
 - **Progress:** a done or skipped item counts 1; an item with children is the mean of its children, its own phases (when it has any) counting as one more share beside them; an active leaf with phases counts the share of phases passed. The route is the mean of its stages; the percent never shows 100 before the route is complete.
 - **Storage:** one folder per route under `~/.claude/claudecharter/<project>/` (or under `CLAUDE_CONFIG_DIR`), with one file per session. Each file is written only by its own session and holds that session's log of actions, its current step, its claims and its last sighting. Every session reads all the files and replays all the actions in time order (corrected for causality), so two sessions never overwrite each other and all of them see the same route. A session that cannot find a configuration folder uses `.claude/charter` in the project, with its own `.gitignore`.
+- **Row width:** under the prompt the row spans the footer, docked pane or not: a zero-height probe measures the slot and the row is sized from it; until the first measurement it uses the conversation's width, with the `⋯` kept at the right edge.
 - **Polling and heartbeat:** a session writes its sighting every minute; other sessions are re-read every 2 seconds while one of them is live, otherwise every 16 seconds.
 - **Claims:** a claim covers a step and everything under it. First come, first served; a person's claim (`/charter claim`) overrides, the latest one winning. Claims of sessions not seen for 10 minutes, or that ended, do not count.
 - **Signals:** subagents come from the spawn and turn events; checks are recognized by the shape of the Bash or PowerShell command; commits from the command's own record or its `[branch hash]` line.
@@ -169,6 +172,7 @@ A change applies at once: Claude Code reloads the mod with the new settings. All
 - With the default placement, claudecharter must be listed first in `CLAUDE_CODE_PLUGIN_DIRS` for the route to sit right under the hint line, above claudepeeker (Claude Code has no priority option).
 - With placement `panel` the route has no motion: the pane draws it still.
 - The desktop app draws the band without motion.
+- Under the prompt the `⋯` answers a click only: that slot never holds the keyboard focus, so it has no hotkey.
 - A mirrored file shows up in `git status` unless you ignore it.
 - A subagent cannot change the route.
 
@@ -190,6 +194,7 @@ npx -y -p typescript@5.6.3 tsc -p .
 | `hooks/cells.ts` | colors, glyphs, the track styles, the cell encoding |
 | `hooks/anim.ts` | the animation state: glides, odometers, badges, sparkles, glint, pulse |
 | `hooks/row.ts` | the settings, the track and its styles, the width rules of the row |
+| `hooks/probe.ts` | the width probe: a surface module that measures the slot under the prompt |
 | `hooks/mirror.ts` | the PROGRESS.md text and its ownership rules |
 | `hooks/demo.ts` | the demo timeline |
 | `types/index.d.ts` | the mod's state contract and shared types |

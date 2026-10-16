@@ -9,7 +9,20 @@ import { DEMO_END_MS, DEMO_TICK_MS, demoAt, isDemoChangeAt } from './demo'
 import { isWriter, mayWrite, mirrorOwner, renderMirror } from './mirror'
 import { ERR, NO_ROUTE_ERROR, applyAction, findItem, percentOf, progress, routeText, topCounts, unknownIdError } from './route'
 import type { ProgressInput } from './route'
-import { DEFAULT_COLUMNS, HINT_INDENT, anyEffect, composeRow, composeTrack, normalizeSettings, ownIndex } from './row'
+import {
+  DEFAULT_COLUMNS,
+  HINT_INDENT,
+  OPEN_GLYPH,
+  OPEN_HOTKEY,
+  OPEN_KEY,
+  PROBE_KEY,
+  anyEffect,
+  composeRow,
+  composeTrack,
+  normalizeSettings,
+  openCells,
+  ownIndex,
+} from './row'
 import {
   CHARTS_LISTED,
   HEARTBEAT_MS,
@@ -66,6 +79,8 @@ let timer: Timer | null = null
 let isBlitting = false
 /** The mounted Raster the timer repaints: the render's request and the band width. */
 let band: { requestId: string; cols: number } | null = null
+/** The cells the row may take under the prompt, as the width probe measured them, by drawing (requestId). */
+const slotCols = new Map<string, number>()
 /** What the band shows, as the last render read it. */
 let scene: Scene | null = null
 let anim: Anim = createAnim()
@@ -810,6 +825,12 @@ function stacked(drawn: RenderElement): RenderNode[] {
 
 // ---- the pane --------------------------------------------------------------------------------------------------
 
+/** Opens the route chart as /charter does: the project's routes listed first, the pane focused. */
+async function openPane($: EngineInterface): Promise<void> {
+  await listCharts($)
+  await $.ui.open({ id: PANE, title: 'Claude-Charter', focus: true, closeOnEscape: true })
+}
+
 const SESSION_COLOR = '#afafd7'
 
 function glyphOf(kind: Signal['kind'], ok: boolean | null): { glyph: string; color: string | undefined } {
@@ -902,6 +923,53 @@ function liveRow($: EngineInterface, Raster: ElementTable<'terminal'>['Raster'],
   return <Raster key={RASTER_KEY} columns={cols} rows={1} cells={cells} />
 }
 
+/**
+ * The row with the open glyph at the slot's right end: the row, a flexible spacer, a one-cell gap, then a plain dim
+ * Button. Under the prompt on the terminal a zero-height width probe comes first: it is absolute, from the row's left
+ * edge to the cells the glyph takes, so its region is exactly the cells the row may take, and it takes no room in the
+ * flow. The Box has no key, margin, padding or gap (a keyed Box is a hover scope). The hotkey is given only in the
+ * band, the one focus site.
+ */
+function withOpen(
+  $: EngineInterface,
+  t: {
+    Box: ElementTable['Box']
+    Text: ElementTable['Text']
+    Button: ElementTable['Button']
+  },
+  row: RenderElement,
+  probe: { requestId: string; Client: ElementTable<'terminal'>['Client'] } | null,
+): RenderElement {
+  const { Box, Text, Button } = t
+  const press = (): void => {
+    void openPane($)
+  }
+  const Client = probe?.Client
+
+  return (
+    <Box flexDirection="row">
+      {probe === null || Client === undefined ? null : (
+        <Box position="absolute" top={0} left={0} right={openCells(settings.placement)}>
+          <Client
+            key={PROBE_KEY}
+            module="./probe.ts"
+            width="100%"
+            props={{ ask: slotCols.get(probe.requestId) === undefined }}
+          />
+        </Box>
+      )}
+      {row}
+      <Box flexGrow={1} />
+      <Text> </Text>
+      {settings.placement === 'above' ? (
+        <Button key={OPEN_KEY} label={OPEN_GLYPH} plain dimColor hotkey={OPEN_HOTKEY} onPress={press} />
+      ) : (
+        <Button key={OPEN_KEY} label={OPEN_GLYPH} plain dimColor onPress={press} />
+      )}
+    </Box>
+  )
+}
+
 /** False for anything that draws nothing: no node, an empty string, a Box or Text without children. */
 function hasContent(n: RenderNode): boolean {
   if (n === null || n === undefined || (n as unknown) === false || n === '') return false
@@ -923,6 +991,7 @@ export const register: Register = (on, options) => {
   demo = null
   isBlitting = false
   band = null
+  slotCols.clear()
   scene = null
   anim = createAnim()
   framesSinceMount = 0
@@ -1262,8 +1331,7 @@ export const register: Register = (on, options) => {
     const idArg = words[1]
 
     if (args === '') {
-      await listCharts($)
-      await open()
+      await openPane($)
 
       return { text: 'Opened the route chart.' }
     }
@@ -1399,13 +1467,19 @@ export const register: Register = (on, options) => {
 
       return next(e)
     }
-    const cols = Math.min(512, (e.viewport?.columns ?? DEFAULT_COLUMNS) - HINT_INDENT)
+    // The conversation's columns are narrower than the footer when a pane is docked, so on the terminal the row is sized
+    // from the slot the width probe measured; until a measurement exists it falls back to the conversation's width.
+    const reserve = openCells(settings.placement)
+    const fallback = Math.min(512, (e.viewport?.columns ?? DEFAULT_COLUMNS) - HINT_INDENT)
+    const measured = e.surface === 'terminal' ? slotCols.get(e.requestId) : undefined
+    const cols = measured === undefined ? fallback : Math.min(512, measured) + reserve
     if (cols < MIN_COLS) {
       stopTimer()
       band = null
 
       return next(e)
     }
+    const rowCols = cols - reserve
     scene = s
     const isStill = e.surface !== 'terminal' || isStaticFallback || !anyEffect(settings.effects)
     syncTargets(anim, s, settings, isStill)
@@ -1422,14 +1496,17 @@ export const register: Register = (on, options) => {
         )
       })
     }
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     let node: RenderElement
-    if (isStill) node = stillRow(Text, cols)
+    if (isStill) node = stillRow(Text, rowCols)
     else {
       // Terminal only: `isStill` is true on every other surface.
       const { Raster } = $.ui.resolve(e)
-      node = liveRow($, Raster, e.requestId, cols)
+      node = liveRow($, Raster, e.requestId, rowCols)
     }
+    // The probe is drawn on the terminal only, also when the row itself is still.
+    const probe = e.surface === 'terminal' ? { requestId: e.requestId, Client: $.ui.resolve(e).Client } : null
+    node = withOpen($, { Box, Text, Button }, node, probe)
 
     // The hint stays first and the route comes right after it, with no margin or padding above the route. With the
     // setting `gapBelow` one blank line follows the route, but only when something is drawn after it.
@@ -1482,19 +1559,22 @@ export const register: Register = (on, options) => {
 
       return next(e)
     }
+    const rowCols = cols - openCells(settings.placement)
     scene = s
     const isStill = e.surface !== 'terminal' || isStaticFallback || !anyEffect(settings.effects)
     syncTargets(anim, s, settings, isStill)
 
     const below = await next(e)
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     let node: RenderElement
-    if (isStill) node = stillRow(Text, cols)
+    if (isStill) node = stillRow(Text, rowCols)
     else {
       // Terminal only: `isStill` is true on every other surface.
       const { Raster } = $.ui.resolve(e)
-      node = liveRow($, Raster, e.requestId, cols)
+      node = liveRow($, Raster, e.requestId, rowCols)
     }
+    // Above the prompt the width is the band's own (bodyColumns): no probe, only the spacer.
+    node = withOpen($, { Box, Text, Button }, node, null)
 
     // No margin, padding or key on the wrapper. With the setting `gapBelow` one blank line follows the row, whatever
     // is drawn after it (the prompt box comes next when the band holds nothing else).
@@ -1521,6 +1601,29 @@ export const register: Register = (on, options) => {
     ) : (
       node
     )
+  })
+
+  // The width probe under the prompt posts the cells the row may take. The hook keeps them by drawing and redraws.
+  // A terminal resize or a pane docking or undocking: the engine lays the slot out again, the probe's module is called
+  // and posts only if the row's cells changed; this hook stores the width and invalidates, and the next render remounts
+  // the Raster at it (a fresh mount resets `band`, as any redraw does). Between the two renders the spacer keeps the
+  // glyph on the right edge when the slot widens; when it narrows the old Raster may be clipped for that one frame.
+  // A pane opening changes the conversation's columns but not the slot: no post, and the row keeps the footer's width.
+  // A reload clears `slotCols`: the probe is given `ask: true`, which differs from its kept state, so it posts again.
+  on('ui.message', async ($, e, next) => {
+    if (e.element !== PROBE_KEY) return next(e)
+    try {
+      const data = e.data as { columns?: unknown } | null
+      const n = data === null || typeof data !== 'object' ? NaN : data.columns
+      if (typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 512 && n !== slotCols.get(e.requestId)) {
+        slotCols.set(e.requestId, n)
+        $.ui.invalidate('ui.render')
+      }
+    } catch {
+      // A malformed message is ignored.
+    }
+
+    return {}
   })
 
   // The panel: the route as a checklist, who works on it, the latest signals, the project's other routes.

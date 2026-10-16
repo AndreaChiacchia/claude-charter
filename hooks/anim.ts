@@ -24,6 +24,7 @@ export const COMMIT_BADGE_FRAMES = 40
 export const PULSE_PROFILE: readonly number[] = [0.2, 0.6, 1, 1, 0.6, 0.2]
 export const PULSE_COUNT = 3
 export const SHIMMER_PAD = 4
+/** The phase dot dims and brightens every this many frames (0.5 s) while Claude works. */
 export const DOT_BREATHE = 10
 /** How much `HEAD` the five filled cells behind the head take, nearest first (the comet). */
 export const COMET_MIX: readonly number[] = [0.4, 0.28, 0.18, 0.1, 0.04]
