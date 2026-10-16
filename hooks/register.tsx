@@ -31,10 +31,11 @@ import {
   normalizeParticipant,
   slugOf,
 } from './share'
-import { INIT_PROMPT, INPUT_SCHEMA, TOOL_DESCRIPTION, USAGE } from './texts'
+import { INIT_PROMPT, INPUT_SCHEMA, NUDGE_TEXT, TOOL_DESCRIPTION, USAGE } from './texts'
 import { CHECK_SHOW_MS, checkLabel, formatDuration, gitCommitInfo, modelLabel, stamp, wordForReason } from './signals'
 
 const TOOL = 'mcp__claudecharter__progress'
+const AGENT_TOOL = 'Agent'
 const PUBLIC_ACTIONS: readonly string[] = ['plan', 'add', 'start', 'done', 'skip', 'block', 'get', 'claim', 'release']
 const PANE = 'charter'
 const RASTER_KEY = 'charter-row'
@@ -91,6 +92,10 @@ let mirrorBlocked = false
 let mirrorClaim = false
 let mirrorTimer: Timer | null = null
 let initPending = false
+/** Set once this session's nudge is decided; cleared when the session has an open route again, leaves or clears its route, or changes id. */
+let nudgeSpent = false
+/** Set by an eligible spawn; the next main-conversation Agent result carries the nudge. */
+let nudgePending = false
 /** Set once the load-order toast has been raised for this load. */
 let orderWarned = false
 /** The running `/charter demo`: counted in its own ticks, so it is deterministic. */
@@ -303,6 +308,8 @@ async function merge($: EngineInterface): Promise<void> {
 
     return
   }
+  // An open route re-arms the nudge: it comes back once the session has none, or only a finished one.
+  if (m.chart !== null && m.chart.finishedAt === null) nudgeSpent = false
   const before = await read($, chartAtom)
   const changed = !same(before, m.chart)
   if (changed) await update($, chartAtom, () => m.chart)
@@ -430,6 +437,8 @@ async function ensureSession($: EngineInterface): Promise<void> {
       claims: old.claims,
     }
     await update($, sessionAtom, () => ({ id, carry: false }))
+    nudgeSpent = false
+    nudgePending = false
     await mutateMine($, () => next)
     await refresh($)
     await ensureSync($)
@@ -445,6 +454,8 @@ async function ensureSession($: EngineInterface): Promise<void> {
   mirrorBlocked = false
   mirrorClaim = false
   initPending = false
+  nudgeSpent = false
+  nudgePending = false
   const found = await findMine($, id)
   if (found !== null) {
     await mutateMine($, () => ({ ...found, endedAt: null, seenAt: now }))
@@ -576,6 +587,7 @@ async function detachMine($: EngineInterface, discard: boolean): Promise<void> {
   await update($, chartAtom, () => null)
   await update($, shareAtom, () => null)
   stopSync()
+  nudgeSpent = false
 }
 
 async function leaveChart($: EngineInterface): Promise<string> {
@@ -929,6 +941,8 @@ export const register: Register = (on, options) => {
   mirrorBlocked = false
   mirrorClaim = false
   initPending = false
+  nudgeSpent = false
+  nudgePending = false
   orderWarned = false
   inMine = queue()
   inRefresh = queue()
@@ -946,6 +960,8 @@ export const register: Register = (on, options) => {
     chartsRoot = null
     projectRoot = null
     hideTimerFor = null
+    nudgeSpent = false
+    nudgePending = false
     await $.tool.register({ name: 'progress', description: TOOL_DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: false })
     await $.command.register({
       name: 'charter',
@@ -1001,6 +1017,26 @@ export const register: Register = (on, options) => {
       if ('error' in out) return { deny: out.error }
 
       return { result: out.text }
+    }
+    if (tool === AGENT_TOOL) {
+      const ran = await next(e)
+      try {
+        // Nothing after next may throw: the registration's catch would run next again.
+        const callerId = (e as unknown as { agentId?: string }).agentId
+        if (!nudgePending || callerId !== undefined) return ran
+        nudgePending = false
+        if (ran.deny !== undefined) {
+          nudgeSpent = false
+
+          return ran
+        }
+        const open = await read($, chartAtom)
+        if (open !== null && open.finishedAt === null) return ran
+
+        return { ...ran, context: [...(ran.context ?? []), NUDGE_TEXT] } as typeof ran
+      } catch {
+        return ran
+      }
     }
     if (tool !== 'Bash' && tool !== 'PowerShell') return next(e)
 
@@ -1098,6 +1134,13 @@ export const register: Register = (on, options) => {
       if (e.workflow || e.isTeammate || 'deny' in r || r.agentId === undefined) return r
       const agentId = r.agentId
       await ensureSession($)
+      if (settings.nudge && !nudgeSpent && e.parentAgentId === undefined && e.resume === undefined) {
+        const open = await read($, chartAtom)
+        if (open === null || open.finishedAt !== null) {
+          nudgeSpent = true
+          nudgePending = true
+        }
+      }
       const now = await $.clock.now()
       if (e.resume) {
         const known = (await read($, crewAtom))[e.resume.agentId]

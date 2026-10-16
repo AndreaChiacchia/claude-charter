@@ -7,7 +7,8 @@ import { PEER_COLORS, decodeCells } from '../hooks/cells'
 import type { Cell } from '../hooks/cells'
 import { mirrorMarker } from '../hooks/mirror'
 import { newChartId } from '../hooks/share'
-import { INIT_PROMPT, TOOL_DESCRIPTION, USAGE } from '../hooks/texts'
+import { splitHint } from '../hooks/route'
+import { INIT_PROMPT, NUDGE_TEXT, TOOL_DESCRIPTION, USAGE } from '../hooks/texts'
 
 const NOW = Date.parse('2026-10-14T10:00:00Z')
 const TOOL = 'mcp__claudecharter__progress'
@@ -275,6 +276,10 @@ test('the tool and the command are registered', async ($, on) => {
   expect(w.tools[0]?.name).toBe('progress')
   expect(w.tools[0]?.isDeferred).toBe(false)
   expect(w.tools[0]?.description).toBe(TOOL_DESCRIPTION)
+  expect(TOOL_DESCRIPTION).toContain('call plan first')
+  expect(TOOL_DESCRIPTION).toContain('Chart what you know; when planning splits a step into parts, add them under it.')
+  expect(TOOL_DESCRIPTION).not.toContain('Use it only when')
+  expect(TOOL_DESCRIPTION).not.toContain('never for a single small task')
   expect(w.commands).toEqual(['charter'])
 })
 
@@ -391,6 +396,89 @@ test('a subagent shows on the band until its turn ends', async ($, on) => {
   expect(rowText(await ui.drawn())).toContain('◐ coverage matrix')
   await $.turn.complete({ answer: '', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' } as never)
   expect(rowText(await ui.drawn())).not.toContain('coverage matrix')
+})
+
+/** A subagent spawn raised by the main conversation, unless `over` says otherwise. */
+const spawn = ($: Engine, over: Record<string, unknown> = {}) =>
+  $.agent.spawn({
+    tool_use_id: 't',
+    prompt: 'p',
+    description: 'coverage matrix',
+    subagentType: 'general-purpose',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'm',
+    background: true,
+    fork: false,
+    ...over,
+  } as never)
+
+/** The `context` an Agent call comes back with. */
+async function agentCall($: Engine, extra: Record<string, unknown> = {}) {
+  const r = (await $.tool.call({
+    tool: 'Agent',
+    description: 'x',
+    prompt: 'p',
+    subagent_type: 'general-purpose',
+    ...extra,
+  } as never)) as { context?: readonly string[] }
+
+  return r.context
+}
+
+test('the first subagent of a session with no route carries the nudge, once', async ($, on) => {
+  world(on)
+  await begin($)
+  await spawn($)
+  expect(await agentCall($)).toEqual([NUDGE_TEXT])
+  await spawn($)
+  expect(await agentCall($)).toBeUndefined()
+})
+
+test('no nudge for a subagent, a teammate, a workflow agent or a resumed run', async ($, on) => {
+  world(on)
+  await begin($)
+  await spawn($, { parentAgentId: 'sub1' })
+  expect(await agentCall($)).toBeUndefined()
+  await spawn($, { isTeammate: true })
+  expect(await agentCall($)).toBeUndefined()
+  await spawn($, { workflow: { runId: 'wf_1', agentIndex: 1 } })
+  expect(await agentCall($)).toBeUndefined()
+  await spawn($, { resume: { agentId: 'a0' } })
+  expect(await agentCall($)).toBeUndefined()
+  // A plain spawn is pending; a subagent's own Agent call does not take it, the main conversation's does.
+  await spawn($)
+  expect(await agentCall($, { agentId: 'sub1' })).toBeUndefined()
+  expect(await agentCall($)).toEqual([NUDGE_TEXT])
+})
+
+test('no nudge while the session has an open route', async ($, on) => {
+  world(on)
+  await begin($)
+  await call($, PLAN)
+  await spawn($)
+  expect(await agentCall($)).toBeUndefined()
+})
+
+test('the nudge comes back after a route is complete or cleared', async ($, on) => {
+  world(on)
+  await begin($)
+  const planned = await call($, { action: 'plan', title: 'T', items: [{ id: 'A', title: 'Alpha' }] })
+  expect(planned.text.endsWith(splitHint('A'))).toBe(true)
+  await call($, { action: 'done', id: 'A' })
+  await spawn($)
+  expect(await agentCall($)).toEqual([NUDGE_TEXT])
+  await spawn($)
+  expect(await agentCall($)).toBeUndefined()
+  await cmd($, 'clear')
+  await spawn($)
+  expect(await agentCall($)).toEqual([NUDGE_TEXT])
+})
+
+test('the nudge setting off', { options: { nudge: 'off' } }, async ($, on) => {
+  world(on)
+  await begin($)
+  await spawn($)
+  expect(await agentCall($)).toBeUndefined()
 })
 
 /** Every margin or padding prop anywhere in a tree. */

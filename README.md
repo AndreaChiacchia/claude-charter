@@ -26,11 +26,12 @@ Left to right: the start cap `◖`, the track with a marker per stage (`◆` pas
   - **Test, build and lint commands** run through Bash or PowerShell: a braille spinner while it runs, then `✓` or `✗` with its label for 6 seconds.
   - **Git commits** are attached to the current step (`◈ 1a2b3c4` flashes on the band, the hash stays beside the step in `/charter`).
 - **Four effects**, each on or off (all on by default):
-  - `glide`: when the route moves forward the head glides to its new place in about 0.8 s with a short bright trail behind it; the fill brightens toward the head like a comet.
+  - `glide`: when the route moves forward the head glides to its new place in about 0.8 s with a short bright trail behind it; the fill brightens toward the head like a comet; a move back (parts added under the current step) glides back without the trail.
   - `roll`: the percent and the stage number roll like an odometer, the digits that change flashing.
   - `activity`: while a subagent or a check runs its spinner turns and the current step shimmers; the phase dot breathes while Claude works, and the next stage marker ahead of the head softly pulses.
   - `celebrate`: a finished part twinkles and shows `✦ Catalogue UI done`; a finished stage sends a gold glint along the track with `✦ Stage 2/5 done ✦` and a twinkling marker; completing the route pulses both caps; a commit flashes its hash.
 - **Stage toasts** (setting `toast`): one when a top-level stage is done and one when the whole route is complete, only in the session that made the change. No toast for subagents or checks: claudespotter owns those.
+- **A nudge** (setting `nudge`): when the main conversation starts its first subagent and the session has no open route, that call's result carries one fixed line asking Claude to chart one if the subagent is a step of multi-stage work. Once per session, again after `/charter clear` or once a route is complete; never for subagents, teammates or workflow agents.
 - **A checklist** (`/charter`): the whole route as a tree with commit hashes beside finished steps and phase pills on active ones (teal for passed phases, lavender for the current one, gray for later ones), the sessions working on it, the latest signals and the project's other routes with `Join` and `Adopt` buttons.
 - **`/charter init`:** rebuilds a route from the conversation for a session that started before the mod was installed.
 - **A markdown mirror** (setting `mirror`): `PROGRESS.md` kept in the project, rewritten on every change.
@@ -57,7 +58,9 @@ An example call sequence:
 3. `start S2.P1` with phase `implement`.
 4. `done S2.P1` with commit `abc1234`.
 
-Skill authors, IWO or any other orchestrator: call the tool whenever a stage, part or phase changes. Subagents, test/build commands and git commits are seen by the mod itself, so report only what it cannot see: the plan, where you are, what is finished. A call from a subagent changes nothing.
+Skill authors or any other orchestrator: call the tool whenever a stage, part or phase changes. Subagents, test/build commands and git commits are seen by the mod itself, so report only what it cannot see: the plan, where you are, what is finished. A call from a subagent changes nothing.
+
+Chart what you know: call `plan` before the first stage starts, even with a single item, and when planning splits a step into parts, add them under it. While the route is a single item with no parts, every result ends with a reminder line (`If planning splits T1 into parts, add them under it ...`). When the main conversation starts its first subagent and the session has no open route, that call's result carries one fixed line suggesting a route (setting `nudge`); it is a hidden reminder for Claude, worded so it can be ignored when the work is not multi-stage, and it comes back only after the route is cleared or complete.
 
 Every call returns the route as it stands:
 
@@ -139,6 +142,7 @@ Set them in `/config`, or in settings under `pluginConfigs.claudecharter`. A cha
 | `activity` | `on`, `off` | spinners turn, the current step shimmers, the phase dot breathes, the next marker pulses |
 | `celebrate` | `on`, `off` | `✦ Stage 2/5 done ✦`, the gold glint, both caps pulse |
 | `toast` | `on`, `off` | `Claude-Charter: stage 2/5 "Planet catalogue" done` |
+| `nudge` | `on`, `off` | the first subagent of a session with no open route suggests charting one / nothing |
 | `mirror` | `off`, `on` | no file / a markdown checklist kept in the project |
 | `mirrorFile` | `PROGRESS.md`, any relative path ending in `.md` | an absolute path or one with `..` falls back to `PROGRESS.md` |
 
@@ -147,7 +151,7 @@ A change applies at once: Claude Code reloads the mod with the new settings. All
 ## How it works
 
 - **The route model:** items with ids (at most 24 characters, no spaces), titles, optional phases, nested up to 4 levels and 200 items. A parent with no phases is done when all its children are (roll-up); the route is complete when every top-level item is closed.
-- **Progress:** a done or skipped item counts 1; an item with children is the mean of its children; an active leaf with phases counts the share of phases passed. The route is the mean of its stages; the percent never shows 100 before the route is complete.
+- **Progress:** a done or skipped item counts 1; an item with children is the mean of its children, its own phases (when it has any) counting as one more share beside them; an active leaf with phases counts the share of phases passed. The route is the mean of its stages; the percent never shows 100 before the route is complete.
 - **Storage:** one folder per route under `~/.claude/claudecharter/<project>/` (or under `CLAUDE_CONFIG_DIR`), with one file per session. Each file is written only by its own session and holds that session's log of actions, its current step, its claims and its last sighting. Every session reads all the files and replays all the actions in time order (corrected for causality), so two sessions never overwrite each other and all of them see the same route. A session that cannot find a configuration folder uses `.claude/charter` in the project, with its own `.gitignore`.
 - **Polling and heartbeat:** a session writes its sighting every minute; other sessions are re-read every 2 seconds while one of them is live, otherwise every 16 seconds.
 - **Claims:** a claim covers a step and everything under it. First come, first served; a person's claim (`/charter claim`) overrides, the latest one winning. Claims of sessions not seen for 10 minutes, or that ended, do not count.

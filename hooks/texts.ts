@@ -1,6 +1,6 @@
 /** The progress tool's description: a fixed text, never built from state. */
 export const TOOL_DESCRIPTION = [
-  'Keeps a live progress chart of multi-stage work, shown to the person as a one-line progress route and as a checklist in /charter. Use it only when you orchestrate work split into several stages or parts (a milestone split into stages, a stage split into parts, each part going through phases such as plan, approve, implement, checks, accept, commit); never for a single small task. Call it from the main conversation, not from a subagent.',
+  'Keeps a live progress chart of multi-stage work, shown to the person as a one-line progress route and as a checklist in /charter. When you are about to start work you will split into stages, parts or phases (a milestone split into stages, a stage split into parts, each part going through phases such as plan, approve, implement, checks, accept, commit), call plan first, before the first stage starts, and keep the route current as the work moves. Chart what you know; when planning splits a step into parts, add them under it. A single small task with no stages needs no route. Call it from the main conversation, not from a subagent.',
   'Actions:',
   '- plan: declare the route: title, and items, each {id, title, phases?, items?}, nested up to 4 levels. Ids are short and unique in the route (S2, S2.P1). Declaring it again keeps the progress of ids that already exist.',
   '- add: append items under parent, or at the top level.',
@@ -12,6 +12,10 @@ export const TOOL_DESCRIPTION = [
   'A route belongs to the session working on it and stays with it across --resume and /clear. The person may share it with other sessions: each has its own current step and holds the parts it claimed. A part another session holds is refused; work on parts you hold or on unclaimed ones, as the result\'s Sessions and Unclaimed lines say.',
   'Every call returns the route as it stands; read it from the result rather than keeping your own copy. Subagents, test/build commands and git commits are seen by the mod itself: report only what it cannot see (the plan, where you are, what is finished), with one call when a stage, part or phase changes.',
 ].join('\n')
+
+/** The line the first main-conversation subagent's result carries when the session has no open route: a fixed text, never built from state. */
+export const NUDGE_TEXT =
+  'claudecharter: this session has no open progress route. If this subagent is one step of multi-stage work, call mcp__claudecharter__progress with action "plan" now and update it as stages and phases change; otherwise ignore this.'
 
 /** The progress tool's input schema. */
 export const INPUT_SCHEMA: Record<string, unknown> = {

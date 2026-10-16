@@ -48,6 +48,8 @@ export type Settings = {
   /** One blank line under the route row, before what is drawn under it. */
   gapBelow: boolean
   toast: boolean
+  /** The one-line nudge on the first subagent of a session with no open route. */
+  nudge: boolean
   mirror: boolean
   mirrorFile: string
 }

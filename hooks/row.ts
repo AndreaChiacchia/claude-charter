@@ -72,6 +72,7 @@ export function normalizeSettings(options: Record<string, unknown>): Settings {
     trackEnds: isTrackEnds(options.trackEnds) ? options.trackEnds : DEFAULT_TRACK_ENDS,
     gapBelow: on('gapBelow'),
     toast: on('toast'),
+    nudge: on('nudge'),
     mirror: options.mirror === 'on',
     mirrorFile: mirrorPathOf(options.mirrorFile),
   }
@@ -206,8 +207,8 @@ export function composeTrack(scene: Scene, anim: Anim, settings: Settings, R: nu
       if (p >= 0 && p < f && c !== undefined && kinds[p] === 'fill') c.fg = mixColor(FILL, HEAD, COMET_MIX[j] ?? 0)
     }
   }
-  // Trail behind a gliding head.
-  const isGliding = anim.head.from !== anim.head.to && tick - anim.head.start < GLIDE_FRAMES
+  // Trail behind a head gliding forward; a head gliding back has none (it would fly ahead of the head).
+  const isGliding = anim.head.to > anim.head.from && tick - anim.head.start < GLIDE_FRAMES
   if (isGliding && headAt >= 0) {
     const trail: [number, number][] = [
       [headAt - 1, 0.6],

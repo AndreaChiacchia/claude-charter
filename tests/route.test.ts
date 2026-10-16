@@ -11,6 +11,7 @@ import {
   progress,
   replay,
   routeText,
+  splitHint,
 } from '../hooks/route'
 import type { ReplayOp } from '../hooks/route'
 import { fixtureChart } from './fixture'
@@ -289,6 +290,53 @@ test('progress and percent', async () => {
   const next = nextItem(f)
   expect(next?.item.id).toBe('S2.P3')
   expect([next?.pos, next?.count, next?.topPos, next?.topCount]).toEqual([3, 3, 2, 5])
+})
+
+test('an item with phases and children counts its own phases as one more share', async () => {
+  const PH = ['plan', 'approve', 'implement', 'checks', 'accept', 'commit']
+  const at = (c: Chart, p: number, pct: number): void => {
+    expect(Math.abs(progress(c) - p) < 0.0001).toBe(true)
+    expect(percentOf(progress(c), c.finishedAt !== null)).toBe(pct)
+  }
+  let c = ok(null, { action: 'plan', title: 'T', items: [{ id: 'T1', title: 'Build', phases: PH }] })
+  c = ok(c, { action: 'start', id: 'T1', phase: 'approve' })
+  at(c, 1 / 6, 16)
+  c = ok(c, {
+    action: 'add',
+    parent: 'T1',
+    items: [
+      { id: 'T1.P1', title: 'One', phases: PH },
+      { id: 'T1.P2', title: 'Two', phases: PH },
+      { id: 'T1.P3', title: 'Three', phases: PH },
+    ],
+  })
+  at(c, 1 / 24, 4)
+  c = ok(c, { action: 'start', id: 'T1.P1', phase: 'implement' })
+  at(c, 0.125, 12)
+  c = ok(c, { action: 'done', id: 'T1.P1' })
+  c = ok(c, { action: 'done', id: 'T1.P2' })
+  c = ok(c, { action: 'done', id: 'T1.P3' })
+  expect(c.items[0]?.status).toBe('active')
+  at(c, (1 / 6 + 3) / 4, 79)
+  c = ok(c, { action: 'start', id: 'T1', phase: 'commit' })
+  at(c, (5 / 6 + 3) / 4, 95)
+  c = ok(c, { action: 'done', id: 'T1' })
+  expect(c.finishedAt).not.toBeNull()
+  at(c, 1, 100)
+  // A parent with children and no phases is still the plain mean.
+  expect(percentOf(progress(fixtureChart()), false)).toBe(28)
+})
+
+test('routeText ends with the split hint while the route is one item', async () => {
+  expect(splitHint('T1')).toBe('If planning splits T1 into parts, add them under it (action "add", parent "T1").')
+  const one = ok(null, { action: 'plan', title: 'T', items: [{ id: 'T1', title: 'Build' }] })
+  expect(routeText(one, null, 0).split('\n').at(-1)).toBe(splitHint('T1'))
+  const parted = ok(one, { action: 'add', parent: 'T1', items: [{ id: 'T1.P1', title: 'One' }] })
+  expect(routeText(parted, null, 0)).not.toContain('If planning splits')
+  expect(routeText(small(), null, 0)).not.toContain('If planning splits')
+  const done = ok(one, { action: 'done', id: 'T1' })
+  expect(done.finishedAt).not.toBeNull()
+  expect(routeText(done, null, 0)).not.toContain('If planning splits')
 })
 
 test('routeText shows the route to the model', async () => {

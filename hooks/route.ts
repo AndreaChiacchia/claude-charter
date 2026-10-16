@@ -142,17 +142,21 @@ export function allIds(chart: Chart): string[] {
 
 export const isClosed = (s: ItemStatus): boolean => s === 'done' || s === 'skipped'
 
-/** How far an item is, 0..1. */
+/**
+ * How far an item is, 0..1. A closed item is 1; a leaf counts the share of its phases passed; an item with children is
+ * the mean of its children, its own phases (when it has any) counting as one more share beside them.
+ */
 export function itemProgress(item: ChartItem): number {
   if (isClosed(item.status)) return 1
-  if (item.items.length > 0) return item.items.reduce((s, c) => s + itemProgress(c), 0) / item.items.length
+  let own = 0
   if ((item.status === 'active' || item.status === 'blocked') && item.phases.length > 0 && item.phase !== null) {
     const at = item.phases.indexOf(item.phase)
-
-    return at < 0 ? 0 : at / item.phases.length
+    if (at >= 0) own = at / item.phases.length
   }
+  if (item.items.length === 0) return own
+  const sum = item.items.reduce((s, c) => s + itemProgress(c), 0)
 
-  return 0
+  return item.phases.length > 0 ? (own + sum) / (item.items.length + 1) : sum / item.items.length
 }
 
 /** How far the route is, 0..1: the mean of its top-level items; exactly 1 once finished. */
@@ -578,6 +582,10 @@ function itemLabel(chart: Chart, id: string | null): string | null {
   return f === null ? null : `${f.item.id} ${f.item.title}`
 }
 
+/** The last line of the result while the route is one top-level item with no children: a fixed template, the item id substituted. */
+export const splitHint = (id: string): string =>
+  `If planning splits ${id} into parts, add them under it (action "add", parent "${id}").`
+
 /** The route as the progress tool's result shows it to the model. */
 export function routeText(chart: Chart | null, share: ShareView | null, now: number): string {
   if (chart === null) return 'No route charted.'
@@ -643,6 +651,8 @@ export function routeText(chart: Chart | null, share: ShareView | null, now: num
     }
   }
   emit(chart.items, 0)
+  const only = chart.items[0]
+  if (!finished && chart.items.length === 1 && only !== undefined && only.items.length === 0) lines.push(splitHint(only.id))
 
   return lines.join('\n')
 }

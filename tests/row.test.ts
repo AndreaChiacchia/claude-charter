@@ -27,7 +27,7 @@ import {
 import type { Cell } from '../hooks/cells'
 import { progress } from '../hooks/route'
 import { DEFAULT_COLUMNS, HINT_INDENT, composeRow, composeTrack, normalizeSettings, ownIndex, posOf } from '../hooks/row'
-import { fixtureChart } from './fixture'
+import { fixtureChart, item } from './fixture'
 
 const S = normalizeSettings({})
 const text = (cells: Cell[]): string => cells.map(c => String.fromCodePoint(c.cp)).join('')
@@ -93,6 +93,8 @@ const primed = (sc: Scene): Anim => {
 test('the settings default to all on, mirror off', async () => {
   expect(S.effects).toEqual({ glide: true, roll: true, activity: true, celebrate: true })
   expect(S.toast).toBe(true)
+  expect(S.nudge).toBe(true)
+  expect(normalizeSettings({ nudge: 'off' }).nudge).toBe(false)
   expect(S.mirror).toBe(false)
   expect(S.mirrorFile).toBe('PROGRESS.md')
   const custom = normalizeSettings({ glide: 'off', toast: 'off', mirror: 'on', mirrorFile: 'docs/route.md' })
@@ -328,6 +330,50 @@ test('the comet brightens the fill toward the head', async () => {
   const flat = (cells: Cell[]): boolean => [1, 2, 3, 5, 6].every(i => cells[i]?.fg === FILL)
   expect(flat(composeTrack(sc, primed(sc), normalizeSettings({ glide: 'off' }), 24, false))).toBe(true)
   expect(flat(composeTrack(sc, primed(sc), S, 24, true))).toBe(true)
+})
+
+test('a backward glide draws no trail', async () => {
+  const sc = scene()
+  const L = 22
+  const trailCell = (from: number, to: number): Cell | undefined => {
+    const a = primed(sc)
+    a.head = { from, to, start: 0 }
+    a.fill = { from, to, start: 0 }
+    a.tick = 4
+    const headAt = Math.min(L - 1, Math.round(headValue(a) * L))
+
+    return composeTrack(sc, a, S, 24, false)[headAt]
+  }
+  // Forward: the bright trail sits right behind the head.
+  expect(trailCell(0.1, 0.5)?.fg).toBe(mixColor(FILL, HEAD, 0.6))
+  // Back: only the static comet, no trail on the side the head moves toward.
+  expect(trailCell(0.5, 0.1)?.fg).not.toBe(mixColor(FILL, HEAD, 0.6))
+})
+
+test('a route of one stage has no stage marker', async () => {
+  const PH6 = ['plan', 'approve', 'implement', 'checks', 'accept', 'commit']
+  const one = (items: ChartItem[] = []): Chart => ({
+    title: 'M1',
+    items: [item('T1', 'Build it', 'active', { phases: PH6, phase: 'approve', items })],
+    current: 'T1',
+    startedAt: 0,
+    updatedAt: 0,
+    finishedAt: null,
+    revision: 1,
+  })
+  const track = '◖' + '━'.repeat(4) + '►' + '━'.repeat(17) + '◗'
+  const still = composeTrack(scene({ chart: one() }), createAnim(), S, 24, true)
+  expect(still.some(c => c.cp === 0x25c6 || c.cp === 0x25c7)).toBe(false)
+  expect(still.filter(c => c.cp === 0x25ba).length).toBe(1)
+  expect(text(still)).toBe(track)
+  const row = composeRow(scene({ chart: one() }), createAnim(), S, 120, true)
+  expect(trimmed(row)).toBe(track + '  16%  M1 › 1/1 Build it › ● approve')
+  // With three pending parts under it: still no marker, 4%, the head one cell in.
+  const parts = [item('T1.P1', 'One', 'pending'), item('T1.P2', 'Two', 'pending'), item('T1.P3', 'Three', 'pending')]
+  const split = composeTrack(scene({ chart: one(parts) }), createAnim(), S, 24, true)
+  expect(split.some(c => c.cp === 0x25c6 || c.cp === 0x25c7)).toBe(false)
+  expect(text(split)).toBe('◖━►' + '━'.repeat(20) + '◗')
+  expect(text(composeRow(scene({ chart: one(parts) }), createAnim(), S, 120, true))).toContain('  4%')
 })
 
 test('the next stage marker pulses while Claude works', async () => {
