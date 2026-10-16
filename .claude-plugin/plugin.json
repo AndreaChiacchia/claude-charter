@@ -1,6 +1,6 @@
 {
   "name": "claudecharter",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A one-line progress route under the prompt (or above it, or only in its pane) for orchestrated work: stages and parts ticked off as they finish, with the live subagents, checks and commits beside them, a /charter checklist and an optional PROGRESS.md mirror",
   "author": { "name": "AndreaChiacchia", "url": "https://github.com/AndreaChiacchia" },
   "types": "./types/index.d.ts",
