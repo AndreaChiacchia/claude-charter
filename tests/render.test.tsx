@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { Participant } from '../types'
-import { PEER_COLORS, decodeCells } from '../hooks/cells'
+import { FAIL, LIVE, OK, PEER_COLORS, TRACK, decodeCells, lighten, mixColor } from '../hooks/cells'
 import type { Cell } from '../hooks/cells'
 import { mirrorMarker } from '../hooks/mirror'
 import { newChartId } from '../hooks/share'
@@ -43,6 +43,9 @@ const PANE = {
   props: { title: 'Claude-Charter', isFocused: true, bodyColumns: 80, placement: 'dock' } as never,
 } as const
 
+/** The same pane on the desktop, which has no Raster: it is drawn still. */
+const PANE_DESKTOP = { ...PANE, surface: 'desktop' } as const
+
 /** All four effects off: a still band and no timer. */
 const STILL = { glide: 'off', roll: 'off', activity: 'off', celebrate: 'off' }
 
@@ -62,6 +65,16 @@ function walk(node: unknown, out: Node[] = []): Node[] {
   out.push(node as Node)
   for (const child of (node as Node).children ?? []) walk(child, out)
   return out
+}
+
+/** Like `text`, but a Raster contributes the characters of its cells. */
+function seen(node: unknown): string {
+  if (typeof node === 'string') return node
+  if (node === null || typeof node !== 'object') return ''
+  const { type, props, children } = node as Node
+  if (type === 'Raster') return cellText(decodeCells(String(props?.cells ?? '')))
+  if (type === 'Button' && (children ?? []).length === 0 && typeof props?.label === 'string') return props.label
+  return (children ?? []).map(seen).join('')
 }
 
 const raster = (node: unknown) => walk(node).find(n => n.type === 'Raster')
@@ -731,7 +744,7 @@ test('the desktop draws a spacer and no probe', async ($, on) => {
   expect(walk(drawn).some(n => n.type === 'Box' && n.props?.flexGrow === 1)).toBe(true)
 })
 
-test('the pane lists the route, and clears it', async ($, on) => {
+test('the pane lists the route, and clears it', { options: STILL }, async ($, on) => {
   const w = world(on)
   await begin($)
   await call($, PLAN)
@@ -1100,7 +1113,7 @@ test('the demo plays on the row, opens no pane, and never writes anything', asyn
   expect(await cmd($, 'demo stop')).toBe('No demo is running.')
 })
 
-test('/charter demo pane shows the demo route in the pane, then the real route again', async ($, on) => {
+test('/charter demo pane shows the demo route in the pane, then the real route again', { options: STILL }, async ($, on) => {
   const w = world(on)
   await begin($)
   const pane = await mount($, PANE)
@@ -1272,7 +1285,7 @@ test('placement panel draws no row, says once that a route is charted, and keeps
   expect(w.blits).toEqual([])
   await call($, { action: 'done', id: 'S1' })
   expect(w.toasts).toEqual([charted, 'Claude-Charter: stage 1/3 "Scaffolding" done'])
-  const shown = text(await (await mount($, PANE)).drawn())
+  const shown = seen(await (await mount($, PANE)).drawn())
   expect(shown).toContain('M1.6')
   expect(shown).toContain('◖')
   expect(w.opens).toEqual([])
@@ -1294,8 +1307,12 @@ test('placement panel plays the demo in the pane only', { options: { placement: 
   )
   expect(w.opens).toEqual(['charter'])
   expect(text(await pane.drawn())).toContain(' · demo')
+  // The row is off, so every blit belongs to the pane (the demo's phase changes at 2 s and 3.5 s move it).
   await w.clock.advance(4000)
-  expect(w.blits).toEqual([])
+  await pane.drawn()
+  await w.clock.advance(1000)
+  expect(w.blits.filter(b => b.requestId !== 'charter')).toEqual([])
+  expect(w.blits.some(b => b.requestId === 'charter')).toBe(true)
   expect(await cmd($, 'demo stop')).toBe('Stopped the demo: the pane shows your route again.')
 })
 
@@ -1308,7 +1325,7 @@ test('placement above names the slot in the demo answer', { options: { placement
 test('the pane draws the track in the chosen style', async ($, on) => {
   world(on)
   await charted($)
-  const shown = text(await (await mount($, PANE)).drawn())
+  const shown = seen(await (await mount($, PANE)).drawn())
   expect(shown).toContain('◖')
   expect(shown).toContain('◗ 0%')
 })
@@ -1316,7 +1333,7 @@ test('the pane draws the track in the chosen style', async ($, on) => {
 test('the pane follows the track style setting', { options: { track: 'ascii', trackEnds: 'auto' } }, async ($, on) => {
   world(on)
   await charted($)
-  const shown = text(await (await mount($, PANE)).drawn())
+  const shown = seen(await (await mount($, PANE)).drawn())
   expect(shown).toContain('] 0%')
   expect(shown).not.toContain('◖')
 })
@@ -1324,7 +1341,185 @@ test('the pane follows the track style setting', { options: { track: 'ascii', tr
 test('the pane follows the track ends setting', { options: { trackEnds: 'corners' } }, async ($, on) => {
   world(on)
   await charted($)
-  const shown = text(await (await mount($, PANE)).drawn())
+  const shown = seen(await (await mount($, PANE)).drawn())
   expect(shown).toContain('｢')
   expect(shown).toContain('｣ 0%')
+})
+
+// ---- the pane moves ---------------------------------------------------------------------------------------------
+
+/** The blits the pane took, all or those of one Raster key. */
+const paneBlits = (w: ReturnType<typeof world>, key?: string) =>
+  w.blits.filter(b => b.requestId === 'charter' && (key === undefined || b.key === key))
+const blitFirst = (b: { cells?: string }): Cell | undefined => decodeCells(b.cells ?? '')[0]
+const rasterKeys = (node: unknown): string[] => walk(node).filter(n => n.type === 'Raster').map(n => String(n.props?.key))
+/** A running row of the pane: a row Box whose label Text is the row's grey ' coverage matrix'. */
+const runRowOf = (node: unknown): Node | undefined =>
+  walk(node).find(
+    n =>
+      n.type === 'Box' &&
+      n.props?.flexDirection === 'row' &&
+      kids(n).some(k => k.type === 'Text' && text(k) === ' coverage matrix' && k.props?.color === '#8a8a8a'),
+  )
+
+test('the pane primes silently, then its track moves and settles', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE)
+  expect(rasterKeys(await pane.drawn())).toContain('charter-pane-track')
+  await w.clock.advance(1000)
+  expect(paneBlits(w)).toEqual([])
+  await call($, { action: 'done', id: 'S2.P1' })
+  await pane.drawn()
+  // The longest effect of a finished part is its badge (ITEM_BADGE_FRAMES = 50 frames, 2.5 s), whose removal repaints the track once.
+  await w.clock.advance(3000)
+  const moved = paneBlits(w, 'charter-pane-track').length
+  expect(moved).toBeGreaterThan(0)
+  await w.clock.advance(2000)
+  expect(paneBlits(w, 'charter-pane-track').length).toBe(moved)
+})
+
+test('a finished part twinkles in the pane, then settles to a check', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE)
+  await pane.drawn()
+  await call($, { action: 'done', id: 'S2.P1' })
+  expect(rasterKeys(await pane.drawn())).toContain('charter-pane-mark-S2.P1')
+  await w.clock.advance(2000)
+  const marks = paneBlits(w, 'charter-pane-mark-S2.P1').map(blitFirst)
+  expect(marks.some(c => c?.cp === 0x2726 || c?.cp === 0x2727)).toBe(true)
+  expect(marks.at(-1)).toMatchObject({ cp: 0x2713, fg: OK })
+  expect(paneBlits(w, 'charter-pane-track').some(b => blitText(b).includes('Data model done'))).toBe(true)
+})
+
+test('a phase pill fills in and the one before it turns teal', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE)
+  await pane.drawn()
+  await call($, { action: 'start', id: 'S2.P1', phase: 'approve' })
+  expect(rasterKeys(await pane.drawn())).toContain('charter-pane-pills-S2.P1')
+  await w.clock.advance(1000)
+  const last = paneBlits(w, 'charter-pane-pills-S2.P1').at(-1)
+  const cells = decodeCells(last?.cells ?? '')
+  // A blank, ` plan ` (6 cells), a blank, ` approve ` (9 cells).
+  expect(cellText(cells.slice(1, 7))).toBe(' plan ')
+  expect(cellText(cells.slice(8, 17))).toBe(' approve ')
+  expect(cells.slice(8, 17).map(c => c.bg)).toEqual(Array<number>(9).fill(LIVE))
+  expect(cells.slice(1, 7).map(c => c.bg)).toEqual(Array<number>(6).fill(0x005f5f))
+})
+
+test('your step breathes in the pane while Claude works, and rests when it stops', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE)
+  expect(rasterKeys(await pane.drawn())).toContain('charter-pane-mark-S2.P1')
+  await $.turn.start({ text: '', turnId: 'm1' } as never)
+  await w.clock.advance(1100)
+  const fgs = paneBlits(w, 'charter-pane-mark-S2.P1').map(b => blitFirst(b)?.fg)
+  expect(fgs).toContain(LIVE)
+  expect(fgs).toContain(mixColor(LIVE, TRACK, 0.5))
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 'm1', reason: 'answer' } as never)
+  await w.clock.advance(200)
+  const count = paneBlits(w).length
+  await w.clock.advance(2000)
+  expect(paneBlits(w).length).toBe(count)
+})
+
+test('a running subagent is listed in the pane with the row\'s spinner, and leaves with its work', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE)
+  await pane.drawn()
+  await spawn($)
+  const drawn = await pane.drawn()
+  expect(rasterKeys(drawn)).toContain('charter-pane-run-a1')
+  expect(seen(drawn)).toContain('coverage matrix')
+  await w.clock.advance(500)
+  const cps = new Set(paneBlits(w, 'charter-pane-run-a1').map(b => blitFirst(b)?.cp ?? 0))
+  expect(cps.size).toBeGreaterThanOrEqual(2)
+  expect([...cps].every(cp => [0x25d0, 0x25d3, 0x25d1, 0x25d2].includes(cp))).toBe(true)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' } as never)
+  expect(rasterKeys(await pane.drawn())).not.toContain('charter-pane-run-a1')
+})
+
+test('a blocked item pulses red in the pane three times, then stays red', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE)
+  await pane.drawn()
+  await call($, { action: 'block', id: 'S2.P1' })
+  expect(rasterKeys(await pane.drawn())).toContain('charter-pane-mark-S2.P1')
+  await w.clock.advance(1500)
+  const cells = paneBlits(w, 'charter-pane-mark-S2.P1').map(blitFirst)
+  expect(cells.length).toBeGreaterThan(0)
+  expect(cells.every(c => c?.cp === 0x2298)).toBe(true)
+  expect(cells.some(c => c?.fg === lighten(FAIL, 0.55))).toBe(true)
+  expect(cells.at(-1)?.fg).toBe(FAIL)
+})
+
+test('with every effect off the pane is still, and lists the running work with the still glyphs', { options: STILL }, async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE)
+  await pane.drawn()
+  await spawn($)
+  await call($, { action: 'done', id: 'S2.P1' })
+  await w.clock.advance(1000)
+  const drawn = await pane.drawn()
+  expect(raster(drawn)).toBeUndefined()
+  expect(paneBlits(w)).toEqual([])
+  expect(text(drawn)).toContain('◖')
+  const row = runRowOf(drawn)
+  expect(row).toBeDefined()
+  const glyph = kids(row)[0]
+  expect(text(glyph)).toBe('◐')
+  expect(glyph?.props?.color).toBe('#afafd7')
+})
+
+test('the desktop pane is still, with the same running rows', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE_DESKTOP)
+  await pane.drawn()
+  await spawn($)
+  await call($, { action: 'done', id: 'S2.P1' })
+  await w.clock.advance(1000)
+  const drawn = await pane.drawn()
+  expect(raster(drawn)).toBeUndefined()
+  expect(paneBlits(w)).toEqual([])
+  const row = runRowOf(drawn)
+  expect(row).toBeDefined()
+  expect(text(kids(row)[0])).toBe('◐')
+  expect(kids(row)[0]?.props?.color).toBe('#afafd7')
+})
+
+test('three refused first blits draw the pane still', async ($, on) => {
+  const w = world(on)
+  w.state.blitAnswer = { deny: 'not mounted' }
+  await charted($)
+  const pane = await mount($, PANE)
+  await pane.drawn()
+  await call($, { action: 'done', id: 'S2.P1' })
+  for (let i = 0; i < 4; i++) {
+    await pane.drawn()
+    await w.clock.advance(200)
+  }
+  expect(raster(await pane.drawn())).toBeUndefined()
+})
+
+test('closing the pane stops its timer', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const pane = await mount($, PANE)
+  await pane.drawn()
+  await call($, { action: 'done', id: 'S2.P1' })
+  await pane.drawn()
+  await w.clock.advance(100)
+  expect(paneBlits(w).length).toBeGreaterThan(0)
+  await pane.press({ key: 'close' })
+  const count = paneBlits(w).length
+  await w.clock.advance(2000)
+  expect(paneBlits(w).length).toBe(count)
 })

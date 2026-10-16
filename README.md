@@ -20,22 +20,22 @@ Left to right: the start cap `◖`, the track with a marker per stage (`◆` pas
 ## Features
 
 - **The route row**, by default under the prompt as the first row after the hint line: one row that never wraps, with no blank line above or below it. The track is a bold teal line on a dim track between two end caps and fills as work finishes; ten styles are available in the `track` setting (`heavy`, `line`, `smooth`, `blocks`, `shade`, `parallelogram`, `squares`, `dots`, `braille`, `ascii`). The end caps are the `trackEnds` setting, the same in every style: by default a capsule `◖ ◗` whose ends are coloured like the bar beside them (the start like the fill, the end like the empty track), or `◉ ◎`, `╺ ╸`, `▐ ▌`, `[ ]`, `｢ ｣`, or `auto` for each style's own (`┣ ┫`, `┠ ┨`, `▐ ▌`, `[ ]`). A finished route turns both caps gold, whatever the choice. The head `►` stands where this session is; every other live session shows as a `►` in its own color (amber, steel blue, pink, green), and a stage another session holds is tinted in that session's color. A dim `⋯` at the right end of the row opens the `/charter` checklist on a click; with placement `above` it reads `c: ⋯`, and `c` opens it once the band holds the focus (a click or ctrl+x tab). On a narrow window the row shrinks in this order: the signal loses its detail, the track shrinks to 10 cells, the route and ancestor titles go, the signal goes, only then does the track go, then the titles, and last the row is cut with `…`. Under 20 columns nothing is drawn. When no step is current it names the next one (`next 3/5 Orbit view`); when the route is complete it rests on a gold `✓ Complete · M1.6 · 5/5`.
-- **Placement** (setting `placement`): `under` the prompt (the default; the first row under the hint, so list claudecharter first), `above` the prompt (the band where surveys draw; it yields to them, and `[-]` or ctrl+x ctrl+a collapses it), or `panel` only (no row anywhere, nothing animates; the pane shows the route, a toast says when a route is charted, and `/charter demo` plays in the pane). With setting `gapBelow` (on by default) one blank line separates the row from what is drawn under it: the other mods' rows under the prompt (no blank line when nothing is drawn after the row), or the prompt box when the row is above it.
+- **Placement** (setting `placement`): `under` the prompt (the default; the first row under the hint, so list claudecharter first), `above` the prompt (the band where surveys draw; it yields to them, and `[-]` or ctrl+x ctrl+a collapses it), or `panel` only (no row anywhere; the pane shows the route and moves as the row would, its Signals topped by the running checks and subagents, a toast says when a route is charted, and `/charter demo` plays in the pane). With setting `gapBelow` (on by default) one blank line separates the row from what is drawn under it: the other mods' rows under the prompt (no blank line when nothing is drawn after the row), or the prompt box when the row is above it.
 - **Hard signals, seen by the mod itself:**
   - **Subagents** with their description: `◐ coverage matrix`, `+2` when more run.
   - **Test, build and lint commands** run through Bash or PowerShell: a braille spinner while it runs, then `✓` or `✗` with its label for 6 seconds.
   - **Git commits** are attached to the current step (`◈ 1a2b3c4` flashes on the band, the hash stays beside the step in `/charter`).
 - **Four effects**, each on or off (all on by default):
-  - `glide`: when the route moves forward the head glides to its new place in about 0.8 s with a short bright trail behind it; the fill brightens toward the head like a comet; a move back (parts added under the current step) glides back without the trail.
-  - `roll`: the percent and the stage number roll like an odometer, the digits that change flashing.
-  - `activity`: while a subagent or a check runs its spinner turns and the current step shimmers; the phase dot breathes while Claude works, and the next stage marker ahead of the head softly pulses.
-  - `celebrate`: a finished part twinkles and shows `✦ Catalogue UI done`; a finished stage sends a gold glint along the track with `✦ Stage 2/5 done ✦` and a twinkling marker; completing the route pulses both caps; a commit flashes its hash.
+  - `glide`: when the route moves forward the head glides to its new place in about 0.8 s with a short bright trail behind it; the fill brightens toward the head like a comet; a move back (parts added under the current step) glides back without the trail. In the /charter pane the track glides too, and a phase pill that is reached fills in.
+  - `roll`: the percent and the stage number roll like an odometer, the digits that change flashing. The pane's percent rolls too.
+  - `activity`: while a subagent or a check runs its spinner turns and the current step shimmers; the phase dot breathes while Claude works, and the next stage marker ahead of the head softly pulses. In the /charter pane your current step breathes while Claude works, the running checks and subagents are listed with the row's spinners, and an item that turns blocked pulses its ⊘ three times.
+  - `celebrate`: a finished part twinkles and shows `✦ Catalogue UI done`; a finished stage sends a gold glint along the track with `✦ Stage 2/5 done ✦` and a twinkling marker; completing the route pulses both caps; a commit flashes its hash. In the /charter pane a finished step twinkles before it settles to ✓, the track shows the same badges, glint and pulse, and a new signal flashes.
 - **Stage toasts** (setting `toast`): one when a top-level stage is done and one when the whole route is complete, only in the session that made the change. No toast for subagents or checks: claudespotter owns those.
 - **A nudge** (setting `nudge`): when the main conversation starts its first subagent and the session has no open route, that call's result carries one fixed line asking Claude to chart one if the subagent is a step of multi-stage work. Once per session, again after `/charter clear` or once a route is complete; never for subagents, teammates or workflow agents.
 - **A checklist** (`/charter`): the whole route as a tree with commit hashes beside finished steps and phase pills on active ones (teal for passed phases, lavender for the current one, gray for later ones), the sessions working on it, the latest signals and the project's other routes with `Join` and `Adopt` buttons.
 - **`/charter init`:** rebuilds a route from the conversation for a session that started before the mod was installed.
 - **A markdown mirror** (setting `mirror`): `PROGRESS.md` kept in the project, rewritten on every change.
-- **`/charter demo`:** a 26 second showcase under the prompt with a made-up route and a made-up second session, so you can see every effect. `/charter demo pane` also shows it in the pane (the made-up route, its second session, the pills advancing and the signals growing); when the demo ends, or `/charter demo stop` runs, the pane switches back to your own route.
+- **`/charter demo`:** a 26 second showcase under the prompt with a made-up route and a made-up second session, so you can see every effect. `/charter demo pane` also shows it in the pane with the pane's motion (the made-up route, its second session, the pills advancing and the signals growing); when the demo ends, or `/charter demo stop` runs, the pane switches back to your own route.
 
 ## For orchestrators
 
@@ -91,7 +91,7 @@ For a session started before the mod was installed and resumed with `claude --re
 
 ## Install
 
-**Claude Code CLI only.** You need Claude Code 2.1.301 or later. The desktop app draws the band without motion.
+**Claude Code CLI only.** You need Claude Code 2.1.301 or later. The desktop app draws the band and the pane without motion.
 
 Load it in every session by adding the folder to `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` (separate several folders with `;` on Windows, `:` elsewhere):
 
@@ -159,7 +159,7 @@ A change applies at once: Claude Code reloads the mod with the new settings. All
 - **Polling and heartbeat:** a session writes its sighting every minute; other sessions are re-read every 2 seconds while one of them is live, otherwise every 16 seconds.
 - **Claims:** a claim covers a step and everything under it. First come, first served; a person's claim (`/charter claim`) overrides, the latest one winning. Claims of sessions not seen for 10 minutes, or that ended, do not count.
 - **Signals:** subagents come from the spawn and turn events; checks are recognized by the shape of the Bash or PowerShell command; commits from the command's own record or its `[branch hash]` line.
-- **Painting:** the band is one cell grid, repainted in place 20 times a second only while something moves, a subagent or check runs, or Claude works. Nothing is repainted while it rests. The frame timer runs only while a row is drawn (never with placement `panel`).
+- **Painting:** the band is one cell grid, repainted in place 20 times a second only while something moves, a subagent or check runs, or Claude works. Nothing is repainted while it rests. The frame timer runs only while a row is drawn (never with placement `panel`). The pane's moving pieces (the track, the current step's marker, a twinkling ✓, a pulsing ⊘, a phase pill filling in, a new signal, the running rows' spinners) are small cell grids repainted the same way, by a timer of their own that runs only while the pane is open and something in it moves or runs. Nothing moves when the pane is first drawn.
 - **The mirror:** off by default. One session writes the file for a shared route (the live one with the smallest session id). The first line names the route; the mod never overwrites a file it did not write, nor one another live route owns, and says so with one toast. `/charter mirror claim` takes the file over.
 
 ## Limitations
@@ -170,7 +170,7 @@ A change applies at once: Claude Code reloads the mod with the new settings. All
 - The clocks of machines sharing a route should agree: the merge orders by time, corrected for causality.
 - Old route folders are not deleted (the API has no delete); they are only ignored after 30 days.
 - With the default placement, claudecharter must be listed first in `CLAUDE_CODE_PLUGIN_DIRS` for the route to sit right under the hint line, above claudepeeker (Claude Code has no priority option).
-- With placement `panel` the route has no motion: the pane draws it still.
+- The pane moves only on the terminal; with all four effects off it is drawn still, its running checks and subagents listed with the row's still glyphs.
 - The desktop app draws the band without motion.
 - Under the prompt the `⋯` answers a click only: that slot never holds the keyboard focus, so it has no hotkey.
 - A mirrored file shows up in `git status` unless you ignore it.
@@ -194,6 +194,7 @@ npx -y -p typescript@5.6.3 tsc -p .
 | `hooks/cells.ts` | colors, glyphs, the track styles, the cell encoding |
 | `hooks/anim.ts` | the animation state: glides, odometers, badges, sparkles, glint, pulse |
 | `hooks/row.ts` | the settings, the track and its styles, the width rules of the row |
+| `hooks/pane.ts` | the pane's motion: finished and blocked steps, phase pills, signals, running rows, the track line |
 | `hooks/probe.ts` | the width probe: a surface module that measures the slot under the prompt |
 | `hooks/mirror.ts` | the PROGRESS.md text and its ownership rules |
 | `hooks/demo.ts` | the demo timeline |

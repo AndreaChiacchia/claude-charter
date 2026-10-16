@@ -1,12 +1,38 @@
 import { atom, read, update } from 'claude-code'
-import type { ElementTable, EngineInterface, Register, RenderElement, RenderNode, Timer } from 'claude-code'
+import type {
+  ElementTable,
+  EngineInterface,
+  Register,
+  RenderChildren,
+  RenderElement,
+  RenderNode,
+  Timer,
+} from 'claude-code'
 
 import type { Chart, ChartItem, ChartSummary, CheckRun, Claim, CrewMember, OpInput, Participant, Signal } from '../types'
 import { FRAME_MS, advance, createAnim, isSettled, syncTargets } from './anim'
 import type { Anim, Scene, Settings } from './anim'
-import { encodeCells, hex, runs } from './cells'
+import { FIGURES, GOLD, LIVE, encodeCells, hex, runs } from './cells'
+import type { Cell } from './cells'
 import { DEMO_END_MS, DEMO_TICK_MS, demoAt, isDemoChangeAt } from './demo'
 import { isWriter, mayWrite, mirrorOwner, renderMirror } from './mirror'
+import {
+  BADGE_ROOM,
+  PERCENT_CELLS,
+  advancePane,
+  composeBlocked,
+  composeDone,
+  composeMine,
+  composePills,
+  composeRunGlyph,
+  composeSignalGlyph,
+  composeTrackLine,
+  createPaneMotion,
+  isPaneMoving,
+  isRasterSafe,
+  syncPane,
+} from './pane'
+import type { PaneMotion, PanePiece } from './pane'
 import { ERR, NO_ROUTE_ERROR, applyAction, findItem, percentOf, progress, routeText, topCounts, unknownIdError } from './route'
 import type { ProgressInput } from './route'
 import {
@@ -52,6 +78,8 @@ const AGENT_TOOL = 'Agent'
 const PUBLIC_ACTIONS: readonly string[] = ['plan', 'add', 'start', 'done', 'skip', 'block', 'get', 'claim', 'release']
 const PANE = 'charter'
 const RASTER_KEY = 'charter-row'
+/** The prefix of the keys of the pane's Rasters. */
+const PANE_KEY = 'charter-pane-'
 /** The band is not drawn under this many columns. */
 const MIN_COLS = 20
 /** First blits refused this many times in a row (none ever accepted) switch the band to a still draw. */
@@ -92,6 +120,25 @@ let everBlitted = false
 /** Set when this slot keeps refusing the first blit: the band is drawn still from then on. */
 let isStaticFallback = false
 let lastEncoded = ''
+/** The pane's frame timer, and the guard that keeps a frame from starting while another still blits. */
+let paneTimer: Timer | null = null
+let paneBlitting = false
+/** The Rasters of the pane as it was last drawn live: the request and the pieces the timer repaints. */
+let paneSite: { requestId: string; pieces: PanePiece[] } | null = null
+/** The cells last taken by each piece of the pane, by piece key. */
+const lastPaneBlit = new Map<string, string>()
+/** Blits accepted since the last render that drew the pane's Rasters. */
+let paneFramesSinceMount = 0
+let paneAnim: Anim = createAnim()
+let paneMotion: PaneMotion = createPaneMotion()
+/** The pane's own counters for the still fallback, independent of the band's. */
+let paneRefusedMounts = 0
+let paneEverBlitted = false
+let isPaneStatic = false
+/** True from the main conversation's turn start to its turn end. */
+let mainWorking = false
+/** Running subagents plus checks at the pane's last live render. */
+let paneRunning = 0
 let chartsRoot: string | null = null
 let projectRoot: string | null = null
 /** The participant files read so far, by path: re-read only when their size or time changed. */
@@ -655,6 +702,7 @@ async function attach($: EngineInterface, chartId: string, isAdopt: boolean): Pr
   maxT = Math.max(maxT, merged.maxT)
   await mutateMine($, () => file)
   anim = createAnim()
+  resetPane()
   await refresh($)
   await ensureSync($)
   await listCharts($)
@@ -731,6 +779,7 @@ async function startDemo($: EngineInterface): Promise<void> {
   const startedAt = await $.clock.now()
   demo = { ticks: 0, startedAt, timer: $.clock.every(DEMO_TICK_MS, () => onDemoTick($)) }
   anim = createAnim()
+  resetPane()
   stopTimer()
   band = null
   $.ui.invalidate('ui.render')
@@ -741,6 +790,7 @@ function endDemo($: EngineInterface): void {
   demo.timer.cancel()
   demo = null
   anim = createAnim()
+  resetPane()
   stopTimer()
   band = null
   $.ui.invalidate('ui.render')
@@ -811,6 +861,91 @@ async function step($: EngineInterface): Promise<void> {
     }
   } finally {
     isBlitting = false
+  }
+}
+
+// ---- painting the pane -------------------------------------------------------------------------------------
+
+function stopPaneTimer(): void {
+  paneTimer?.cancel()
+  paneTimer = null
+}
+
+/** Forgets what the pane drew and where it moved: the next live draw starts clean (and primes silently). */
+function resetPane(): void {
+  stopPaneTimer()
+  paneSite = null
+  lastPaneBlit.clear()
+  paneFramesSinceMount = 0
+  paneAnim = createAnim()
+  paneMotion = createPaneMotion()
+}
+
+/** True while Claude works or a subagent or a check runs (and the activity effect is on). */
+function paneBusy(): boolean {
+  return settings.effects.activity && (mainWorking || paneRunning > 0)
+}
+
+/** True while the pane has Rasters to repaint and something in it moves or runs. */
+function needsPaneTimer(): boolean {
+  return (
+    paneSite !== null &&
+    !isPaneStatic &&
+    anyEffect(settings.effects) &&
+    (!isSettled(paneAnim) || isPaneMoving(paneMotion) || paneBusy())
+  )
+}
+
+function kickPane($: EngineInterface): void {
+  if (paneTimer === null && needsPaneTimer()) paneTimer = $.clock.every(FRAME_MS, () => void paneStep($))
+}
+
+/** One frame of the pane: its animation advances and each piece that changed is repainted in place. */
+async function paneStep($: EngineInterface): Promise<void> {
+  if (paneBlitting || paneSite === null) return
+  paneBlitting = true
+  try {
+    const target = paneSite
+    advance(paneAnim, settings.effects)
+    advancePane(paneMotion, paneAnim.tick)
+    for (const piece of target.pieces) {
+      const cells = piece.compose()
+      if (cells.length !== piece.width) {
+        // A piece changed its width: only a redraw can resize a Raster.
+        stopPaneTimer()
+        $.ui.invalidate('ui.render')
+
+        return
+      }
+      const encoded = encodeCells(cells)
+      if (encoded === lastPaneBlit.get(piece.key)) continue
+      const r = await $.ui.blit({ requestId: target.requestId, key: piece.key, cells: encoded })
+      if (r.deny === undefined) {
+        paneEverBlitted = true
+        paneFramesSinceMount += 1
+        lastPaneBlit.set(piece.key, encoded)
+      } else if (paneFramesSinceMount === 0 && !paneEverBlitted) {
+        // The first blit after a fresh draw was refused: this pane may not take blits. A fresh mount retries.
+        paneRefusedMounts += 1
+        stopPaneTimer()
+        if (paneRefusedMounts >= MAX_REFUSED_MOUNTS) {
+          isPaneStatic = true
+          paneSite = null
+        }
+        $.ui.invalidate('ui.render')
+
+        return
+      } else {
+        // Refused after earlier successes (another tab, a resize): a later render restarts the timer.
+        stopPaneTimer()
+
+        return
+      }
+      if (paneSite !== target) return
+    }
+    if (!needsPaneTimer()) stopPaneTimer()
+  } finally {
+    paneBlitting = false
   }
 }
 
@@ -999,6 +1134,12 @@ export const register: Register = (on, options) => {
   everBlitted = false
   isStaticFallback = false
   lastEncoded = ''
+  resetPane()
+  paneRefusedMounts = 0
+  paneEverBlitted = false
+  isPaneStatic = false
+  mainWorking = false
+  paneRunning = 0
   chartsRoot = null
   projectRoot = null
   cache.clear()
@@ -1021,6 +1162,8 @@ export const register: Register = (on, options) => {
     stopTimer()
     stopSync()
     anim = createAnim()
+    resetPane()
+    mainWorking = false
     band = null
     scene = null
     cache.clear()
@@ -1263,6 +1406,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const res = await next(e)
     try {
+      if (e.agentId === undefined) mainWorking = false
       await ensureSession($)
       const agentId = e.agentId
       if (agentId !== undefined) {
@@ -1295,6 +1439,8 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     try {
       if (e.agentId === undefined) {
+        mainWorking = true
+        kickPane($)
         await ensureSession($)
       } else {
         const agentId = e.agentId
@@ -1626,6 +1772,13 @@ export const register: Register = (on, options) => {
     return {}
   })
 
+  // The pane closing (the Close button, Escape, another mod, an unload) ends its motion; this only observes.
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE) resetPane()
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   // The panel: the route as a checklist, who works on it, the latest signals, the project's other routes.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
@@ -1654,11 +1807,13 @@ export const register: Register = (on, options) => {
       return out
     }
 
-    const [chartReal, shareReal, others, logReal] = await Promise.all([
+    const [chartReal, shareReal, others, logReal, crew, checks] = await Promise.all([
       read($, chartAtom),
       read($, shareAtom),
       read($, chartsAtom),
       read($, logAtom),
+      read($, crewAtom),
+      read($, checksAtom),
     ])
     const now = await $.clock.now()
     // With the row off (placement panel) no row hook runs: an open pane keeps the poll going after a reload.
@@ -1669,6 +1824,22 @@ export const register: Register = (on, options) => {
     const chart: Chart | null = d === null ? chartReal : d.chart
     const share = d === null ? shareReal : d.share
     const log: Signal[] = d === null ? logReal : d.log
+    // The running work and the newest commit, as the row reads them (the filters and the order of `sceneNow`).
+    const runningAgents: CrewMember[] =
+      d === null
+        ? Object.values(crew)
+            .filter(a => a.endedAt === null)
+            .sort((a, b) => a.startedAt - b.startedAt)
+        : d.agents
+    const runningChecks: CheckRun[] =
+      d === null
+        ? Object.values(checks)
+            .filter(c => c.endedAt === null && !c.isBackground)
+            .sort((a, b) => a.startedAt - b.startedAt)
+        : d.checks
+    const lastCommit = [...log].reverse().find(s => s.kind === 'commit')
+    const paneCommit: Scene['commit'] =
+      d === null ? (lastCommit === undefined ? null : { seq: lastCommit.seq, hash: lastCommit.text }) : d.commit
     const w = e.props.bodyColumns
     const offsetMin = -new Date(now).getTimezoneOffset()
     const peers = share?.peers ?? []
@@ -1733,7 +1904,16 @@ export const register: Register = (on, options) => {
             Clear route
           </Button>
         )}
-        <Button key="close" role="dismiss" onPress={() => $.ui.close({ id: PANE })}>
+        <Button
+          key="close"
+          role="dismiss"
+          onPress={() => {
+            // The pane's motion ends with the press itself; the `ui.close` hook above ends it for every other way to close.
+            resetPane()
+
+            return $.ui.close({ id: PANE })
+          }}
+        >
           Close
         </Button>
       </Box>
@@ -1745,6 +1925,9 @@ export const register: Register = (on, options) => {
     )
 
     if (chart === null) {
+      stopPaneTimer()
+      paneSite = null
+
       return (
         <Box flexDirection="column">
           <Text dimColor>
@@ -1763,13 +1946,67 @@ export const register: Register = (on, options) => {
     const paneScene: Scene = {
       chart,
       share,
-      agents: [],
-      checks: [],
+      agents: runningAgents,
+      checks: runningChecks,
       lastCheck: null,
-      commit: null,
-      isWorking: false,
+      commit: paneCommit,
+      isWorking: mainWorking,
     }
-    const track = runs(composeTrack(paneScene, createAnim(), settings, Math.max(8, Math.min(40, w - 6)), true))
+    // Live: the terminal, with an effect on and no still fallback. The pane's moving pieces are then Rasters.
+    const PaneRaster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : undefined
+    const isLive = PaneRaster !== undefined && !isPaneStatic && anyEffect(settings.effects)
+    // A fresh `paneAnim` and `paneMotion` prime silently on this call: nothing moves on the first draw.
+    syncTargets(paneAnim, paneScene, settings, !isLive)
+    syncPane(paneMotion, paneAnim.tick, chart, log, settings.effects, !isLive)
+    const R = Math.max(8, Math.min(40, w - 6))
+    const pieces: PanePiece[] = []
+    let mk: ((key: string, compose: () => Cell[]) => RenderElement) | null = null
+    let track: ReturnType<typeof runs> = []
+    if (isLive && PaneRaster !== undefined) {
+      const Raster = PaneRaster
+      paneRunning = runningAgents.length + runningChecks.length
+      lastPaneBlit.clear()
+      // A Raster composed once now: it is mounted with these cells, and the timer repaints it by its key.
+      mk = (key, compose) => {
+        const cells = compose()
+        const fullKey = PANE_KEY + key
+        const encoded = encodeCells(cells)
+        pieces.push({ key: fullKey, width: cells.length, compose })
+        lastPaneBlit.set(fullKey, encoded)
+
+        return <Raster key={fullKey} columns={cells.length} rows={1} cells={encoded} />
+      }
+    } else {
+      stopPaneTimer()
+      paneSite = null
+      track = runs(composeTrack(paneScene, createAnim(), settings, R, true))
+    }
+
+    /** The glyph of a running row: the spinner Raster while the activity effect moves it, else the row's still glyph. */
+    const runGlyph = (kind: 'check' | 'agent', id: string): RenderNode => {
+      if (mk !== null && settings.effects.activity) return mk('run-' + id, () => composeRunGlyph(kind, paneAnim.tick, true))
+      const still = composeRunGlyph(kind, 0, false)[0]
+
+      return <Text color={hex(kind === 'check' ? GOLD : LIVE)}>{String.fromCodePoint(still?.cp ?? 0x20)}</Text>
+    }
+    const runRows: RenderNode[] = [
+      ...runningChecks.map(c => (
+        <Box flexDirection="row">
+          {runGlyph('check', c.id)}
+          <Text wrap="truncate-end" color={hex(FIGURES)}>
+            {' ' + c.label}
+          </Text>
+        </Box>
+      )),
+      ...runningAgents.map(a => (
+        <Box flexDirection="row">
+          {runGlyph('agent', a.id)}
+          <Text wrap="truncate-end" color={hex(FIGURES)}>
+            {' ' + a.description}
+          </Text>
+        </Box>
+      )),
+    ]
 
     const tree: RenderNode[] = []
     const visit = (items: ChartItem[], depth: number): void => {
@@ -1807,31 +2044,124 @@ export const register: Register = (on, options) => {
         const holder = peers.length > 0 && share !== null ? share.held[item.id] : undefined
         const hasPhases = (item.status === 'active' || item.status === 'blocked') && item.phases.length > 0
         const at = item.phase === null ? -1 : item.phases.indexOf(item.phase)
-        tree.push(
-          <Text wrap="truncate-end">
-            {'  '.repeat(depth)}
-            <Text color={color} bold={bold} dimColor={dim}>
-              {glyph}
-            </Text>
-            <Text dimColor>{' ' + item.id}</Text>
-            <Text bold={isMine} dimColor={item.status === 'skipped'}>
-              {' ' + item.title}
-            </Text>
-            {item.commit === null ? null : <Text dimColor>{' · ' + item.commit}</Text>}
-            {holder === undefined ? null : (
-              <Text color={holder.isMe ? SESSION_COLOR : hex(holder.color)}>{` ‹${holder.label}›`}</Text>
-            )}
-            {item.note === null ? null : <Text dimColor>{' — ' + item.note}</Text>}
-            {hasPhases && w >= 60 ? pillsOf(item.phases, at) : null}
-            {hasPhases && w < 60 && at >= 0 ? (
-              <Text dimColor>{` · ${item.phase} ${at + 1}/${item.phases.length}`}</Text>
-            ) : null}
-          </Text>,
+        // A piece that moves is a Raster (live pane only): the current step's marker, a finished step's twinkle, a
+        // blocked step's pulse and a phase pill filling in. Anything else is drawn as Text, as it always was.
+        let glyphNode: RenderNode = (
+          <Text color={color} bold={bold} dimColor={dim}>
+            {glyph}
+          </Text>
         )
+        let hasRaster = false
+        if (mk !== null) {
+          if (item.status === 'active' && isMine && settings.effects.activity) {
+            glyphNode = mk('mark-' + item.id, () => composeMine(paneAnim.tick, paneBusy()))
+            hasRaster = true
+          } else if (item.status === 'done' && paneMotion.marks.has(item.id)) {
+            glyphNode = mk('mark-' + item.id, () => composeDone(paneMotion, item.id, paneAnim.tick))
+            hasRaster = true
+          } else if (item.status === 'blocked' && paneMotion.pulses.has(item.id)) {
+            glyphNode = mk('mark-' + item.id, () => composeBlocked(paneMotion, item.id, paneAnim.tick))
+            hasRaster = true
+          }
+        }
+        const pillsNode: RenderNode | null =
+          mk !== null && hasPhases && w >= 60 && item.phases.every(isRasterSafe) && paneMotion.pills.has(item.id)
+            ? mk('pills-' + item.id, () => composePills(item.phases, at, paneMotion.pills.get(item.id), paneAnim.tick))
+            : null
+        const bodyNodes: RenderChildren[] = [
+          <Text dimColor>{' ' + item.id}</Text>,
+          <Text bold={isMine} dimColor={item.status === 'skipped'}>
+            {' ' + item.title}
+          </Text>,
+          item.commit === null ? null : <Text dimColor>{' · ' + item.commit}</Text>,
+          holder === undefined ? null : (
+            <Text color={holder.isMe ? SESSION_COLOR : hex(holder.color)}>{` ‹${holder.label}›`}</Text>
+          ),
+          item.note === null ? null : <Text dimColor>{' — ' + item.note}</Text>,
+        ]
+        const phaseTail: RenderChildren[] = [
+          hasPhases && w >= 60 && pillsNode === null ? pillsOf(item.phases, at) : null,
+          hasPhases && w < 60 && at >= 0 ? (
+            <Text dimColor>{` · ${item.phase} ${at + 1}/${item.phases.length}`}</Text>
+          ) : null,
+        ]
+        if (!hasRaster && pillsNode === null) {
+          tree.push(
+            <Text wrap="truncate-end">
+              {'  '.repeat(depth)}
+              {glyphNode}
+              {bodyNodes}
+              {phaseTail}
+            </Text>,
+          )
+        } else {
+          tree.push(
+            <Box flexDirection="row">
+              {depth > 0 ? <Text>{'  '.repeat(depth)}</Text> : null}
+              {glyphNode}
+              <Text wrap="truncate-end">
+                {bodyNodes}
+                {phaseTail}
+              </Text>
+              {pillsNode}
+            </Box>,
+          )
+        }
         visit(item.items, depth + 1)
       }
     }
     visit(chart.items, 0)
+
+    // The track line, live: one Raster with the row's track, the percent and the room for a badge.
+    const badgeRoom = settings.effects.celebrate ? Math.max(0, Math.min(BADGE_ROOM, w - R - PERCENT_CELLS)) : 0
+    const trackNode: RenderNode =
+      mk !== null ? (
+        mk('track', () => composeTrackLine({ ...paneScene, isWorking: mainWorking }, paneAnim, settings, R, badgeRoom))
+      ) : (
+        <Text wrap="truncate-end">
+          {track.map(r => (
+            <Text color={hex(r.fg)} backgroundColor={hex(r.bg)}>
+              {r.text}
+            </Text>
+          ))}
+          <Text dimColor>{` ${pct}%`}</Text>
+        </Text>
+      )
+    // A new signal's glyph flashes: that line holds a Raster.
+    const signalLines: RenderNode[] = [...log]
+      .reverse()
+      .slice(0, 10)
+      .map(s => {
+        const g = glyphOf(s.kind, s.ok)
+        if (mk !== null && paneMotion.arrivals.has(s.seq)) {
+          return (
+            <Box flexDirection="row">
+              <Text dimColor>{stamp(s.at, offsetMin) + '  '}</Text>
+              {mk('sig-' + s.seq, () => composeSignalGlyph(s.kind, s.ok, paneMotion.arrivals.get(s.seq), paneAnim.tick))}
+              <Text wrap="truncate-end">
+                <Text>{' ' + s.text}</Text>
+                <Text dimColor>{'  ' + s.detail}</Text>
+              </Text>
+            </Box>
+          )
+        }
+
+        return (
+          <Text wrap="truncate-end">
+            <Text dimColor>{stamp(s.at, offsetMin) + '  '}</Text>
+            <Text color={g.color} dimColor={g.color === undefined}>
+              {g.glyph}
+            </Text>
+            <Text>{' ' + s.text}</Text>
+            <Text dimColor>{'  ' + s.detail}</Text>
+          </Text>
+        )
+      })
+    if (mk !== null) {
+      paneSite = { requestId: e.requestId, pieces }
+      paneFramesSinceMount = 0
+      kickPane($)
+    }
 
     return (
       <Box flexDirection="column">
@@ -1844,14 +2174,7 @@ export const register: Register = (on, options) => {
               (isDemo ? ' · demo' : '')}
           </Text>
         </Box>
-        <Text wrap="truncate-end">
-          {track.map(r => (
-            <Text color={hex(r.fg)} backgroundColor={hex(r.bg)}>
-              {r.text}
-            </Text>
-          ))}
-          <Text dimColor>{` ${pct}%`}</Text>
-        </Text>
+        {trackNode}
         {peers.length === 0 || share === null ? null : (
           <Box flexDirection="column" marginTop={1}>
             <Text bold>Sessions</Text>
@@ -1893,27 +2216,8 @@ export const register: Register = (on, options) => {
         </Box>
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Signals</Text>
-          {log.length === 0 ? (
-            <Text dimColor>No signals yet.</Text>
-          ) : (
-            [...log]
-              .reverse()
-              .slice(0, 10)
-              .map(s => {
-                const g = glyphOf(s.kind, s.ok)
-
-                return (
-                  <Text wrap="truncate-end">
-                    <Text dimColor>{stamp(s.at, offsetMin) + '  '}</Text>
-                    <Text color={g.color} dimColor={g.color === undefined}>
-                      {g.glyph}
-                    </Text>
-                    <Text>{' ' + s.text}</Text>
-                    <Text dimColor>{'  ' + s.detail}</Text>
-                  </Text>
-                )
-              })
-          )}
+          {runRows}
+          {log.length === 0 && runRows.length === 0 ? <Text dimColor>No signals yet.</Text> : signalLines}
         </Box>
         {routes}
         {buttons}
