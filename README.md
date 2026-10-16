@@ -1,6 +1,6 @@
 # Claude-Charter
 
-![version](https://img.shields.io/badge/version-0.1.0-blue)
+![version](https://img.shields.io/badge/version-0.2.0-blue)
 
 A mod for the Claude Code CLI for long orchestrated sessions. It draws the plan of a milestone as a one-line progress route under the prompt, right under the hint line, with its stages and parts ticked off as they finish, so you always know where this session is and what its agents are doing. When you split the work across sessions it also shows where the others are. The slot under the prompt reads, top to bottom: the hint line, the route, the [claudepeeker](https://github.com/AndreaChiacchia/claude-peeker) status line, claudespotter's rows, then the row of [claudeticker](https://github.com/AndreaChiacchia/claude-ticker). You can also put the route above the prompt, or keep it only in the `/charter` pane (setting `placement`).
 
