@@ -123,6 +123,8 @@ function world(on: On, stacked: string[] = [], above?: string) {
   const opens: string[] = []
   const tools: { name: string; description: string; isDeferred?: boolean }[] = []
   const commands: string[] = []
+  const reads: string[] = []
+  const lists: string[] = []
   let stamp = 0
   const put = (path: string, body: string) => {
     files.set(norm(path), { text: body, mtimeMs: ++stamp })
@@ -134,6 +136,7 @@ function world(on: On, stacked: string[] = [], above?: string) {
     return { value: files.has(p) || [...files.keys()].some(k => k.startsWith(p + '/')) }
   })
   on('fs.read', (_$, e) => {
+    reads.push(norm(e.path))
     const f = files.get(norm(e.path))
     if (f === undefined) throw new Error('ENOENT')
     return { value: f.text }
@@ -144,6 +147,7 @@ function world(on: On, stacked: string[] = [], above?: string) {
     return { value: undefined }
   })
   on('fs.list', (_$, e) => {
+    lists.push(norm(e.path))
     const prefix = norm(e.path) + '/'
     const seen = new Map<string, { name: string; kind: 'file' | 'dir'; size: number; mtimeMs: number; isLink: false }>()
     for (const [path, f] of files) {
@@ -247,7 +251,7 @@ function world(on: On, stacked: string[] = [], above?: string) {
   }
   const chartId = (): string => fileOf('aaaa1111')?.chartId ?? newChartId(NOW, 'aaaa1111')
 
-  return { state, files, writes, toasts, blits, submits, fills, opens, tools, commands, clock, put, peerFile, fileOf, chartId }
+  return { state, files, writes, toasts, blits, submits, fills, opens, tools, commands, reads, lists, clock, put, peerFile, fileOf, chartId }
 }
 
 const begin = ($: Engine) => $.session.start({ cwd: '/x/proj', surface: 'terminal', isInteractive: true } as never)
@@ -912,6 +916,26 @@ test('/charter join lists the routes of the project, joins one, and leaves it', 
   expect(raster(await ui.drawn())).toBeUndefined()
 })
 
+test('/charter join does not read the route this session is on', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  w.lists.length = 0
+  await cmd($, 'join')
+  expect(w.lists.includes(ROOT + '/' + w.chartId())).toBe(false)
+})
+
+test('the poll does not read back the file this session wrote', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  const own = ROOT + '/' + w.chartId() + '/aaaa1111.json'
+  w.reads.length = 0
+  w.lists.length = 0
+  // The heartbeat writes the file at 60 s; the idle poll at 64 s merges the route.
+  await w.clock.advance(65_000)
+  expect(w.lists.includes(ROOT + '/' + w.chartId())).toBe(true)
+  expect(w.reads.filter(p => p === own)).toEqual([])
+})
+
 test('/charter adopt takes a route over and the other session drops it', async ($, on) => {
   const w = world(on)
   await begin($)
@@ -1522,4 +1546,44 @@ test('closing the pane stops its timer', async ($, on) => {
   const count = paneBlits(w).length
   await w.clock.advance(2000)
   expect(paneBlits(w).length).toBe(count)
+})
+
+test('a reload keeps the running subagents and the signals', async ($, on) => {
+  world(on)
+  await charted($)
+  const ui = await mount($)
+  await spawn($)
+  expect(rowText(await ui.drawn())).toContain('coverage matrix')
+  // The reload: the session starts again under the same id.
+  await begin($)
+  expect(rowText(await ui.drawn())).toContain('coverage matrix')
+  await $.turn.complete({ answer: '', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' } as never)
+  await begin($)
+  const pane = await mount($, PANE)
+  expect(seen(await pane.drawn())).toContain('coverage matrix')
+})
+
+test('a reload between /clear and the next prompt still carries the route', async ($, on) => {
+  const w = world(on)
+  await charted($)
+  await $.session.end({ reason: 'clear', sessionId: 'aaaa1111' } as never)
+  w.state.sid = 'bbbb2222'
+  await begin($)
+  const carried = w.fileOf('bbbb2222')
+  expect(carried?.chartId).toBe(w.chartId())
+  expect(carried?.takes.map(t => t.sessionId)).toEqual(['aaaa1111'])
+  expect(carried?.current).toBe('S2.P1')
+  expect(carried?.claims.map(c => c.id)).toEqual(['S2'])
+  const ui = await mount($)
+  expect(raster(await ui.drawn())).toBeDefined()
+})
+
+test('two progress calls at once keep both claims', async ($, on) => {
+  const w = world(on)
+  await begin($)
+  await call($, PLAN)
+  await Promise.all([call($, { action: 'start', id: 'S2.P1' }), call($, { action: 'start', id: 'S3' })])
+  const mine = w.fileOf('aaaa1111')
+  expect(mine?.claims.map(c => c.id).sort()).toEqual(['S2', 'S3'])
+  expect(mine?.ops.length).toBe(3)
 })

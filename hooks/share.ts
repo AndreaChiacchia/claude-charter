@@ -1,6 +1,6 @@
 import type { Chart, ChartSummary, Claim, Holder, Op, OpAction, OpInput, Participant, Peer, ShareView, Take } from '../types'
 import { LIVE, PEER_COLORS } from './cells'
-import { findItem, isClosed, percentOf, progress, replay, topCounts, walk } from './route'
+import { cloneChart, findItem, isClosed, percentOf, progress, replay, topCounts, walk } from './route'
 import type { ReplayOp } from './route'
 
 /** A session is live when seen in the last 3 minutes. */
@@ -118,6 +118,39 @@ export type Merged = {
   liveOthers: number
 }
 
+/** The routes whose replay is kept, by route id: the most recently used. */
+const REPLAY_KEPT = 64
+const replays = new Map<string, { key: string; chart: Chart | null }>()
+
+/**
+ * The route the ops of every file give. Replay is pure on those ops, so the result for the very same ops (compared as
+ * their exact serialization) is reused instead of replayed again. Every caller gets its own deep copy: the kept route
+ * is never handed out.
+ */
+function replayOf(files: Participant[]): Chart | null {
+  const key = files.map(f => f.sessionId + '\u0000' + JSON.stringify(f.ops)).join('\u0001')
+  const slot = files[0]?.chartId ?? ''
+  const hit = replays.get(slot)
+  let base: Chart | null
+  if (hit !== undefined && hit.key === key) {
+    base = hit.chart
+  } else {
+    const ops: ReplayOp[] = []
+    for (const f of files) {
+      for (const o of f.ops) ops.push({ t: o.t, s: f.sessionId, n: o.n, input: o.input })
+    }
+    base = replay(ops)
+  }
+  replays.delete(slot)
+  replays.set(slot, { key, chart: base })
+  for (const k of replays.keys()) {
+    if (replays.size <= REPLAY_KEPT) break
+    replays.delete(k)
+  }
+
+  return base === null ? null : cloneChart(base)
+}
+
 /** Every ancestor id (outermost first) of every item. */
 function ancestry(chart: Chart): Map<string, string[]> {
   const map = new Map<string, string[]>()
@@ -147,11 +180,7 @@ export function mergeChart(files: Participant[], meId: string, now: number): Mer
   const claimLive = (p: Participant): boolean => p.endedAt === null && now - p.seenAt < CLAIM_LAPSE_MS
 
   // 3. The route: every file's ops, members or not.
-  const ops: ReplayOp[] = []
-  for (const f of files) {
-    for (const o of f.ops) ops.push({ t: o.t, s: f.sessionId, n: o.n, input: o.input })
-  }
-  const chart = replay(ops)
+  const chart = replayOf(files)
   const meFile = files.find(p => p.sessionId === meId)
   if (chart !== null) {
     const mine = meFile?.current ?? null

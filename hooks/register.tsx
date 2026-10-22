@@ -222,8 +222,15 @@ async function ensureBase($: EngineInterface): Promise<void> {
 const dirOf = (chartId: string): string => `${chartsRoot ?? ''}/${chartId}`
 const fileOf = (chartId: string, sessionId: string): string => `${dirOf(chartId)}/${sessionId}.json`
 
-/** The participant files of a route, re-reading only what changed. A file that fails to parse keeps its last good copy. */
-async function readChart($: EngineInterface, chartId: string): Promise<Participant[]> {
+/**
+ * The participant files of a route, re-reading only what changed. A file that fails to parse keeps its last good copy.
+ * The file of session `skipSessionId` is left out unread.
+ */
+async function readChart(
+  $: EngineInterface,
+  chartId: string,
+  skipSessionId: string | null = null,
+): Promise<Participant[]> {
   const dir = dirOf(chartId)
   let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
   try {
@@ -234,6 +241,7 @@ async function readChart($: EngineInterface, chartId: string): Promise<Participa
   const out: Participant[] = []
   for (const entry of entries) {
     if (entry.kind !== 'file' || !entry.name.endsWith('.json')) continue
+    if (skipSessionId !== null && entry.name === skipSessionId + '.json') continue
     const path = `${dir}/${entry.name}`
     const hit = cache.get(path)
     if (hit !== undefined && hit.mtimeMs === entry.mtimeMs && hit.size === entry.size) {
@@ -272,6 +280,8 @@ function queue(): <T>(job: () => Promise<T>) => Promise<T> {
 let inMine = queue()
 /** Serializes the merges, so an older reading never lands over a newer one. */
 let inRefresh = queue()
+/** Runs the actions one at a time, so each starts from what the one before it wrote. */
+let inAction = queue()
 
 /** Writes this session's own file (and the atom): the only file this session ever writes in a route's folder. */
 async function putMine($: EngineInterface, p: Participant): Promise<void> {
@@ -353,7 +363,7 @@ async function merge($: EngineInterface): Promise<void> {
   if (me === null || me.detached) return
   await ensureBase($)
   const now = await $.clock.now()
-  const files = (await readChart($, me.chartId)).filter(p => p.sessionId !== me.sessionId)
+  const files = (await readChart($, me.chartId, me.sessionId)).filter(p => p.sessionId !== me.sessionId)
   files.push(me)
   const m = mergeChart(files, me.sessionId, now)
   maxT = Math.max(maxT, m.maxT)
@@ -462,9 +472,13 @@ async function listCharts($: EngineInterface): Promise<ChartSummary[]> {
   }
   const found: ChartSummary[] = []
   for (const dir of dirs) {
-    const m = mergeChart(await readChart($, dir), id, now)
-    if (m.chart === null || m.isDiscarded || m.updatedAt < now - RETAIN_MS) continue
     if (me !== null && !me.detached && me.chartId === dir) continue
+    const files = await readChart($, dir)
+    let newest = 0
+    for (const f of files) newest = Math.max(newest, f.seenAt)
+    if (newest < now - RETAIN_MS) continue
+    const m = mergeChart(files, id, now)
+    if (m.chart === null || m.isDiscarded || m.updatedAt < now - RETAIN_MS) continue
     found.push(chartSummary(dir, m, now))
   }
   const listed = found.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, CHARTS_LISTED)
@@ -479,8 +493,10 @@ async function listCharts($: EngineInterface): Promise<ChartSummary[]> {
 /**
  * Makes the atoms follow the session id. The same id: nothing. A /clear carried the route: the new id joins it with a
  * take of the old id. Any other change of id: the route that id has (or none).
+ * `keepSignalsOf`: the id the session had before a reload; when the id is still that one, the crew, the checks and the
+ * log are kept.
  */
-async function ensureSession($: EngineInterface): Promise<void> {
+async function ensureSession($: EngineInterface, keepSignalsOf: string | null = null): Promise<void> {
   await ensureBase($)
   const id = await $.session.id()
   const s = await read($, sessionAtom)
@@ -509,9 +525,11 @@ async function ensureSession($: EngineInterface): Promise<void> {
   }
   await update($, sessionAtom, () => ({ id, carry: false }))
   stopSync()
-  await update($, crewAtom, () => ({}))
-  await update($, checksAtom, () => ({}))
-  await update($, logAtom, () => [])
+  if (keepSignalsOf !== id) {
+    await update($, crewAtom, () => ({}))
+    await update($, checksAtom, () => ({}))
+    await update($, logAtom, () => [])
+  }
   anim = createAnim()
   mirrorBlocked = false
   mirrorClaim = false
@@ -545,7 +563,12 @@ function heldError(label: string, node: string, target: string, unclaimed: strin
 }
 
 /** One action of the progress tool (or a person's command, or a signal): the model, `/charter` and the commit signal share it. */
-async function runAction($: EngineInterface, input: ProgressInput, opts: { isPerson: boolean }): Promise<Out> {
+function runAction($: EngineInterface, input: ProgressInput, opts: { isPerson: boolean }): Promise<Out> {
+  return inAction(() => runActionNow($, input, opts))
+}
+
+/** The body of runAction, run inside its queue. */
+async function runActionNow($: EngineInterface, input: ProgressInput, opts: { isPerson: boolean }): Promise<Out> {
   await ensureSession($)
   const now = await $.clock.now()
   await refresh($)
@@ -736,7 +759,7 @@ async function writeMirror($: EngineInterface): Promise<void> {
     const me = await read($, mineAtom)
     if (me === null || me.detached) return
     const now = await $.clock.now()
-    const files = (await readChart($, me.chartId)).filter(p => p.sessionId !== me.sessionId)
+    const files = (await readChart($, me.chartId, me.sessionId)).filter(p => p.sessionId !== me.sessionId)
     files.push(me)
     const m = mergeChart(files, me.sessionId, now)
     if (m.chart === null) return
@@ -1156,6 +1179,7 @@ export const register: Register = (on, options) => {
   orderWarned = false
   inMine = queue()
   inRefresh = queue()
+  inAction = queue()
 
   on('session.start', async ($, e, next) => {
     endDemo($)
@@ -1181,8 +1205,10 @@ export const register: Register = (on, options) => {
       argumentHint:
         '[init | clear | done|start|skip|reset|claim|release <id> | adopt|join [n] | leave | mirror claim | demo | demo pane | demo stop]',
     })
-    await update($, sessionAtom, () => ({ id: null, carry: false }))
-    await ensureSession($)
+    // A reload keeps what the session held: the same id keeps the signals, and a pending /clear carry still happens.
+    const prev = await read($, sessionAtom)
+    if (!(prev.carry && prev.id !== null)) await update($, sessionAtom, () => ({ id: null, carry: false }))
+    await ensureSession($, prev.id)
     // A settings change reloads the plugin and raises this again: redraw both row slots and the pane at once.
     $.ui.invalidate('ui.render')
 

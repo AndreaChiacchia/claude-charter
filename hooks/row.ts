@@ -463,38 +463,61 @@ function tailCells(scene: Scene, anim: Anim, settings: Settings, isShort: boolea
 export function composeRow(scene: Scene, anim: Anim, settings: Settings, cols: number, isStill: boolean): Cell[] {
   const Rw = clamp(Math.round(cols * 0.2), 12, 28)
   const P = percentCells(scene, anim, isStill)
-  const Cfull = crumbCells(scene, anim, settings, 'full', isStill)
-  const Cshort = crumbCells(scene, anim, settings, 'short', isStill)
-  const Cmin = crumbCells(scene, anim, settings, 'min', isStill)
-  const Sfull = tailCells(scene, anim, settings, false, isStill)
-  const Sshort = tailCells(scene, anim, settings, true, isStill)
+  // Each part is built on first use and then reused by the candidates that follow: most frames fit on the third or later.
+  const once = <T,>(make: () => T): (() => T) => {
+    let made: { value: T } | undefined
 
-  const build = (track: number | null, crumbs: Cell[], tail: Cell[]): Cell[] => {
+    return () => {
+      if (made === undefined) made = { value: make() }
+
+      return made.value
+    }
+  }
+  const Cfull = once(() => crumbCells(scene, anim, settings, 'full', isStill))
+  const Cshort = once(() => crumbCells(scene, anim, settings, 'short', isStill))
+  const Cmin = once(() => crumbCells(scene, anim, settings, 'min', isStill))
+  const Sfull = once(() => tailCells(scene, anim, settings, false, isStill))
+  const Sshort = once(() => tailCells(scene, anim, settings, true, isStill))
+  const tracks = new Map<number, Cell[]>()
+  const trackOf = (width: number): Cell[] => {
+    let cells = tracks.get(width)
+    if (cells === undefined) {
+      cells = composeTrack(scene, anim, settings, width, isStill)
+      tracks.set(width, cells)
+    }
+
+    return cells
+  }
+  const none: Cell[] = []
+
+  const build = (track: number | null, crumbs: () => Cell[], tail: () => Cell[]): Cell[] => {
     const out: Cell[] = []
     if (track !== null) {
-      out.push(...composeTrack(scene, anim, settings, track, isStill))
+      out.push(...trackOf(track))
       out.push(...blank(1))
     }
     out.push(...P)
     out.push(...blank(2))
-    out.push(...crumbs)
-    if (tail.length > 0) {
+    out.push(...crumbs())
+    const tailCellsOf = tail()
+    if (tailCellsOf.length > 0) {
       out.push(...blank(2))
-      out.push(...tail)
+      out.push(...tailCellsOf)
     }
 
     return out
   }
+  const noTail = (): Cell[] => none
 
   const candidates: (() => Cell[])[] = [
     () => build(Rw, Cfull, Sfull),
     () => build(Rw, Cfull, Sshort),
     () => build(10, Cfull, Sshort),
     () => build(10, Cshort, Sshort),
-    () => build(10, Cshort, []),
+    () => build(10, Cshort, noTail),
     () => build(null, Cshort, Sshort),
-    () => build(null, Cshort, []),
-    () => build(null, Cmin, []),
+    () => build(null, Cshort, noTail),
+    () => build(null, Cmin, noTail),
   ]
   let row: Cell[] | null = null
   for (const make of candidates) {
@@ -505,7 +528,7 @@ export function composeRow(scene: Scene, anim: Anim, settings: Settings, cols: n
     }
   }
   if (row === null) {
-    const cells = build(null, Cmin, [])
+    const cells = build(null, Cmin, noTail)
     row = cols <= 0 ? [] : [...cells.slice(0, cols - 1), cellOf(GLYPH.ellipsis, FIGURES)]
   }
   while (row.length < cols) row.push(...blank(1))

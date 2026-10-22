@@ -110,6 +110,23 @@ test('two participants build one route; each viewer has its own current step', a
   expect(asA.liveOthers).toBe(1)
 })
 
+test('the replay is reused only for the very same ops, and every merge gets its own copy', async () => {
+  const a = part(A, { ops: [op(1, PLAN)] })
+  const m1 = mergeChart([a], A, NOW)
+  const m2 = mergeChart([a], A, NOW)
+  expect(m2.chart).toEqual(m1.chart)
+  expect(m2.chart === m1.chart).toBe(false)
+  const first = m1.chart?.items[0]
+  if (first !== undefined) first.status = 'done'
+  expect(mergeChart([a], A, NOW).chart?.items[0]?.status).toBe('pending')
+  // The same count and the same last op, but other content: not the same route.
+  const other = part(A, { ops: [op(1, { ...PLAN, title: 'Other' })] })
+  expect(mergeChart([other], A, NOW).chart?.title).toBe('Other')
+  // A new op: replayed.
+  const more = part(A, { ops: [op(1, PLAN), op(2, { action: 'done', id: 'S1' }, 2)] })
+  expect(mergeChart([more], A, NOW).chart?.items[0]?.status).toBe('done')
+})
+
 test('a take supersedes a session; its ops still replay and its claims stop counting', async () => {
   const taken = part(A, { ops: [op(1, PLAN)], claims: [{ id: 'S2', at: 5, force: false }], current: 'S2' })
   const taker = part(B, { joinedAt: NOW - 500, takes: [{ sessionId: A, t: NOW - 400 }] })
